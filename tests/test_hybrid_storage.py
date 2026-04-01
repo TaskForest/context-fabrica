@@ -64,7 +64,33 @@ def test_postgres_search_statement_filters_by_domain_and_validity() -> None:
     )
 
     statement = store.postgres.search_statement()
-    assert "r.domain = $2" in statement
-    assert "r.valid_from <= $3" in statement
-    assert "r.valid_to IS NULL OR r.valid_to >= $3" in statement
+    assert "r.domain = %s" in statement
+    assert "r.valid_from <= %s" in statement
+    assert "r.valid_to IS NULL OR r.valid_to >= %s" in statement
     assert "r.memory_stage <> 'staged'" in statement
+
+
+def test_write_record_calls_postgres_write_methods(mocker) -> None:
+    store = HybridMemoryStore(
+        HybridStoreSettings(
+            postgres=PostgresSettings(dsn="postgresql://localhost/test"),
+            kuzu=KuzuSettings(path="./tmp-kuzu"),
+        )
+    )
+    upsert = mocker.patch.object(store.postgres, "upsert_record")
+    replace_chunks = mocker.patch.object(store.postgres, "replace_chunks")
+    replace_relations = mocker.patch.object(store.postgres, "replace_relations")
+
+    record = KnowledgeRecord(
+        record_id="r-live",
+        text="AuthService depends on TokenSigner.",
+        source="design-doc",
+        domain="platform",
+        confidence=0.8,
+    )
+
+    plan = store.write_record(record, chunks=[("AuthService depends on TokenSigner.", [0.1] * 1536, 0)])
+
+    upsert.assert_called_once_with(record)
+    replace_chunks.assert_called_once()
+    replace_relations.assert_called_once_with(record.record_id, plan.postgres_relation_rows)
