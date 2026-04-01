@@ -25,6 +25,12 @@ This repo is currently best understood as an **architecture-first working protot
 
 This keeps durable memory, provenance, freshness, and embeddings in Postgres while letting relation-heavy traversals move into a graph store when needed.
 
+Recent improvement inspired by `claude-scholar`:
+- memory is now treated as **curated in layers**, not as one flat pool
+- `staged` notes are excluded from default retrieval until promoted
+- reusable extracted templates/patterns can live in a dedicated `pattern` tier
+- a deterministic project-memory bootstrap/status script now exists for low-freedom repo setup
+
 ## Why This Exists
 
 Engineering memory is not only about nearest text chunks. In real work, agents need relation-aware context:
@@ -58,6 +64,7 @@ The design keeps the canonical memory model separate from any one backend so the
 
 - `write authority first`: one canonical place to store facts, provenance, and freshness
 - `relations are logical, not mandatory physical graph infra`: model relations early, choose graph storage only when needed
+- `curation over accumulation`: not every agent output deserves canonical memory
 - `promotion over raw accumulation`: durable knowledge should be curated, not just appended forever
 - `freshness beats elegance`: stale facts are more damaging than imperfect ranking
 - `agent-facing, not human-facing`: optimize for reliable autonomous reasoning, not just dashboards
@@ -180,8 +187,43 @@ Current v2 components in the repo:
 - `HybridMemoryStore` for write-plan composition
 - `PostgresPgvectorAdapter` for canonical storage schema and query statements
 - `KuzuGraphProjectionAdapter` for relation projection statements
+- `policy.py` for staged/canonical/pattern routing and promotion decisions
 - local Postgres bootstrap in `sql/postgres_bootstrap.sql`
 - local smoke verification in `scripts/verify_local_postgres.sh`
+- deterministic repo bootstrap/status tool in `scripts/project_memory.py`
+
+## Curated Memory Tiers
+
+The system now models three memory tiers:
+
+- `staged`: draft or low-confidence notes that should not influence normal retrieval yet
+- `canonical`: reviewed facts and workflow knowledge safe for agent-facing retrieval
+- `pattern`: reusable mined patterns/templates worth preserving separately from ordinary facts
+
+Typical lifecycle:
+
+```text
+raw observation -> staged -> reviewed/prompted -> canonical
+repeated reusable structure -> mined -> pattern
+```
+
+The in-memory engine and Postgres search path both respect this distinction by filtering out staged memories by default.
+
+## Deterministic Project Memory Tooling
+
+Inspired by claude-scholar's low-freedom project-memory scripts, `context-fabrica` now includes:
+
+```bash
+python scripts/project_memory.py bootstrap --root .
+python scripts/project_memory.py status --root .
+```
+
+This creates a repo-local structure for:
+- `memory/staging/`
+- `memory/canonical/`
+- `memory/patterns/`
+
+and tracks it in `.context_fabrica/registry.json`.
 
 The project ships with a portable baseline inspired by proven patterns used across open-source memory systems:
 - weighted hybrid retrieval with RRF-style robustness,
@@ -209,6 +251,8 @@ The project ships with a portable baseline inspired by proven patterns used acro
 
 - `valid_from` / `valid_to` per memory record
 - `invalidate_record()` for soft deletion and supersession
+- `stage` / `kind` for promotion routing and curated retrieval
+- `reviewed_at` for promotion auditability
 - `confidence` as a trust prior
 - provenance fields (`source`, `metadata`) for future policy gates
 
@@ -219,6 +263,8 @@ Current checks that pass in this repo:
 - `python3 -m pytest`
 - local `Postgres 18 + pgvector` schema bootstrap
 - local smoke insert/query for records, chunks, and relation rows
+- staged-memory promotion policy tests
+- deterministic project-memory bootstrap/status script tests
 - static diagnostics with zero Python errors in `src/` and `tests/`
 
 ## Research References That Shaped v0.1
@@ -235,9 +281,10 @@ Current checks that pass in this repo:
 1. Wire real Postgres read/write execution into the package API
 2. Add chunking + embedding ingestion for live records
 3. Add projection worker from canonical Postgres rows into graph backend
-4. Add conflict handling (`supersedes`, contradiction sets, as-of queries)
-5. Add weighted-RRF and calibrated fusion modes
-6. Add tenant-aware namespaces and memory lifecycle policies (TTL/decay/archival)
+4. Add promotion review queues and agent-assisted conflict handling
+5. Add conflict handling (`supersedes`, contradiction sets, as-of queries)
+6. Add weighted-RRF and calibrated fusion modes
+7. Add tenant-aware namespaces and memory lifecycle policies (TTL/decay/archival)
 
 ## Roadmap
 

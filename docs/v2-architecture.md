@@ -15,6 +15,7 @@ This keeps ingestion, provenance, freshness, invalidation, and embeddings in one
 - durable memory records
 - semantic chunks + embeddings
 - validity windows
+- curation stage (`staged` / `canonical` / `pattern`)
 - provenance and metadata
 - typed relation rows
 - promotion/invalidation history
@@ -29,16 +30,18 @@ This keeps ingestion, provenance, freshness, invalidation, and embeddings in one
 ## Write Flow
 
 1. Agent writes or updates a `KnowledgeRecord`.
-2. Postgres stores the canonical record and chunk embeddings.
-3. Projection extracts entities and typed relations.
-4. Kuzu receives projected `MemoryRecord`, `Entity`, `HAS_ENTITY`, and `RELATED` edges.
+2. A promotion policy classifies it into `staged`, `canonical`, or `pattern`.
+3. Postgres stores the canonical record state and chunk embeddings.
+4. Projection extracts entities and typed relations.
+5. Kuzu receives projected `MemoryRecord`, `Entity`, `HAS_ENTITY`, and `RELATED` edges.
 
 ## Read Flow
 
 1. Semantic retrieval starts in Postgres via `pgvector`.
-2. Matching records expose entities/relations.
-3. Kuzu expands nearby entities or paths when relation reasoning matters.
-4. `context-fabrica` fuses semantic, graph, recency, and confidence signals.
+2. `staged` records are filtered out unless explicitly requested.
+3. Matching records expose entities/relations.
+4. Kuzu expands nearby entities or paths when relation reasoning matters.
+5. `context-fabrica` fuses semantic, graph, recency, and confidence signals.
 
 ## Why Postgres Remains Canonical
 
@@ -58,6 +61,12 @@ Kuzu is not the source of truth for raw text, provenance, or lifecycle policy. I
 - `memory_records`
 - `memory_chunks`
 - `memory_relations`
+
+Important fields added for curation:
+
+- `memory_stage`
+- `memory_kind`
+- `reviewed_at`
 
 ### Kuzu tables
 
