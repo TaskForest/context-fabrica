@@ -1,0 +1,3 @@
+{"record_id":"r1","text":"AuthService uses TokenSigner and depends on KeyStore.","domain":"platform","source":"design","confidence":0.8}
+{"record_id":"r2","text":"TokenSigner rotates keys from KeyStore daily.","domain":"platform","source":"runbook","confidence":0.7}
+{"record_id":"r3","text":"BillingService depends on EventBus for payment settlement.","domain":"platform","source":"adr","confidence":0.75}
