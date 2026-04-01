@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import suppress
 from importlib import import_module
+from typing import Any, cast
 
 from ..config import KuzuSettings
 from ..models import Relation
@@ -44,12 +45,44 @@ class KuzuGraphProjectionAdapter:
             "RETURN neighbor.name AS entity_name, count(*) AS path_count ORDER BY path_count DESC LIMIT $limit"
         )
 
-    def connect(self) -> object:
+    def connect(self) -> Any:
         with suppress(ModuleNotFoundError):
             kuzu = import_module("kuzu")
             database = kuzu.Database(self.settings.path)
             return kuzu.Connection(database)
         raise ModuleNotFoundError("Install context-fabrica[kuzu] to use the Kuzu adapter")
+
+    def bootstrap(self) -> None:
+        conn = cast(Any, self.connect())
+        for statement in self.bootstrap_statements():
+            conn.execute(statement)
+
+    def project(self, projection: GraphProjection, *, domain: str, source: str) -> None:
+        conn = cast(Any, self.connect())
+        conn.execute(
+            "MERGE (r:MemoryRecord {record_id: $record_id}) SET r.domain = $domain, r.source = $source",
+            {
+                "record_id": projection.record_id,
+                "domain": domain,
+                "source": source,
+            },
+        )
+        for entity in projection.entities:
+            conn.execute("MERGE (e:Entity {name: $entity_name})", {"entity_name": entity})
+            conn.execute(
+                "MATCH (r:MemoryRecord {record_id: $record_id}), (e:Entity {name: $entity_name}) MERGE (r)-[:HAS_ENTITY {weight: 1.0}]->(e)",
+                {"record_id": projection.record_id, "entity_name": entity},
+            )
+        for relation in projection.relations:
+            conn.execute(
+                self._relation_statement(relation),
+                {
+                    "source_entity": relation.source_entity,
+                    "target_entity": relation.target_entity,
+                    "relation_type": relation.relation,
+                    "weight": relation.weight,
+                },
+            )
 
     def _relation_statement(self, relation: Relation) -> str:
         return (
