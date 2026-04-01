@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal
+
+MemoryStage = Literal["staged", "canonical", "pattern"]
+MemoryKind = Literal["fact", "workflow", "pattern", "note"]
 
 
 @dataclass
@@ -18,6 +21,9 @@ class KnowledgeRecord:
     valid_from: datetime = field(default_factory=lambda: datetime.now(tz=timezone.utc))
     valid_to: datetime | None = None
     supersedes: str | None = None
+    stage: MemoryStage = "canonical"
+    kind: MemoryKind = "fact"
+    reviewed_at: datetime | None = None
 
 
 @dataclass
