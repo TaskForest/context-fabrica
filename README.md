@@ -98,8 +98,13 @@ python -m pip install -r requirements-v2.txt
 Single happy-path demo:
 
 ```bash
-PYTHONPATH=src python -m context_fabrica.demo_cli --dsn "postgresql:///context_fabrica" --project
+context-fabrica-demo --dsn "postgresql:///context_fabrica" --project
 ```
+
+See also:
+- `docs/getting-started.md`
+- `examples/basic_memory.py`
+- `examples/live_postgres_demo.py`
 
 This command will:
 - bootstrap the Postgres schema
@@ -112,10 +117,8 @@ Default embedding behavior:
 - if you configure `embedding_dimensions=384` and install `fastembed` manually -> `FastEmbed` is used automatically
 - if you explicitly want sentence-transformers -> install it separately and pass your own embedder instance
 
-Note on packaging: the repository includes package metadata and console-script entrypoints, but the **verified path in this repo today is source-first execution** (`requirements-*.txt` + `PYTHONPATH=src`).
-
 For CLI users, the current practical split is:
-- `python -m pip install .` -> base package + console scripts
+- `python -m pip install .` -> base package + installed console scripts
 - `python -m pip install -r requirements-v2.txt` -> Postgres/Kuzu runtime dependencies
 
 ## Python Usage
@@ -169,6 +172,21 @@ It is a poor fit as:
 - a pure hosted chatbot memory feature
 - a replacement for your agent runtime/orchestrator
 - a generic BI or human-only knowledge portal
+
+## Support Matrix
+
+Currently verified in this repo:
+
+- Python: `3.9`
+- OS: `macOS` (local verification environment)
+- Postgres: local Postgres with `pgvector` extension available
+- Graph projection: local `Kuzu` runtime installed and projector exercised successfully
+
+Known current boundaries:
+
+- installed package path is verified for the base CLI surface
+- full v2 runtime still expects `requirements-v2.txt` dependencies to be installed
+- compatibility outside the verified environment should be treated as best-effort until broader CI coverage is added
 
 ## Method
 
@@ -282,24 +300,28 @@ store.promote_record("draft-note-1", reason="reviewed-by-agent")
 Projection worker examples:
 
 ```bash
-python scripts/run_projector.py --once
-PYTHONPATH=src python -m context_fabrica.projector_cli --once
-PYTHONPATH=src python -m context_fabrica.projector_cli --status
-PYTHONPATH=src python -m context_fabrica.projector_cli --retry-failed
+context-fabrica-projector --once
+context-fabrica-projector --status
+context-fabrica-projector --retry-failed
+context-fabrica-projector --requeue-record live-auth-1
+context-fabrica-projector --requeue-all-canonical
+context-fabrica-projector --requeue-domain platform
 ```
 
 Installed console-script examples (if your user script directory is on `PATH`):
 
 ```bash
+context-fabrica-doctor --dsn "postgresql:///context_fabrica"
 context-fabrica-bootstrap --dsn "postgresql:///context_fabrica"
 context-fabrica-demo --dsn "postgresql:///context_fabrica" --project
 context-fabrica-projector --status
 ```
 
-Bootstrap command:
+Source-first equivalents:
 
 ```bash
 PYTHONPATH=src python -m context_fabrica.bootstrap_cli --root . --dsn "postgresql:///context_fabrica"
+PYTHONPATH=src python -m context_fabrica.doctor_cli --dsn "postgresql:///context_fabrica"
 ```
 
 See `docs/v2-architecture.md` for the exact split between the databases.
@@ -362,6 +384,13 @@ The project ships with a portable baseline inspired by proven patterns used acro
 - In-memory defaults for easy local use and testing.
 - Clear adapters path for LanceDB/FAISS/pgvector and Neo4j/Memgraph/Kuzu.
 - Works for software, data, infra, research, and ops domains.
+
+## Project Files For Launch
+
+- `CHANGELOG.md`
+- `CONTRIBUTING.md`
+- `docs/getting-started.md`
+- `.github/workflows/ci.yml`
 
 ## Current Repository Layout
 
