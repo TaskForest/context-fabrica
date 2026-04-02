@@ -303,7 +303,7 @@ Projection worker examples:
 context-fabrica-projector --once
 context-fabrica-projector --status
 context-fabrica-projector --retry-failed
-context-fabrica-projector --requeue-record live-auth-1
+context-fabrica-projector --requeue-record <record-id>
 context-fabrica-projector --requeue-all-canonical
 context-fabrica-projector --requeue-domain platform
 ```
