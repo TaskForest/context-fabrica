@@ -79,6 +79,13 @@ class PostgresPgvectorAdapter:
             f"CREATE INDEX IF NOT EXISTS idx_{schema}_relations_target ON {schema}.memory_relations(target_entity);",
             f"CREATE INDEX IF NOT EXISTS idx_{schema}_chunks_embedding ON {schema}.memory_chunks USING hnsw (embedding vector_cosine_ops);",
             f"CREATE INDEX IF NOT EXISTS idx_{schema}_projection_jobs_status ON {schema}.projection_jobs(status, updated_at);",
+            f"CREATE OR REPLACE FUNCTION {schema}.notify_projection_job() RETURNS trigger AS $$ "
+            f"BEGIN PERFORM pg_notify('{schema}_projection_jobs', NEW.record_id); RETURN NEW; END; "
+            "$$ LANGUAGE plpgsql;",
+            f"DROP TRIGGER IF EXISTS trg_projection_notify ON {schema}.projection_jobs;",
+            f"CREATE TRIGGER trg_projection_notify AFTER INSERT OR UPDATE OF status ON {schema}.projection_jobs "
+            f"FOR EACH ROW WHEN (NEW.status = 'pending') "
+            f"EXECUTE FUNCTION {schema}.notify_projection_job();",
         ]
 
     def upsert_record_statement(self) -> str:
@@ -417,11 +424,23 @@ class PostgresPgvectorAdapter:
                 rows = cur.fetchall()
         return [self._row_to_query_result(row) for row in rows]
 
+    @property
+    def notification_channel(self) -> str:
+        return f"{self.settings.schema}_projection_jobs"
+
     def connect(self) -> Any:
         with suppress(ModuleNotFoundError):
             psycopg = import_module("psycopg")
             return psycopg.connect(self.settings.dsn)
         raise ModuleNotFoundError("Install context-fabrica[postgres] to use the Postgres adapter")
+
+    def listen_connection(self) -> Any:
+        """Open a connection and subscribe to projection job notifications."""
+        conn = self.connect()
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            cur.execute(f"LISTEN {self.notification_channel};")
+        return conn
 
     def _ensure_vector_registered(self, conn: Any) -> None:
         register_vector = import_module("pgvector.psycopg").register_vector

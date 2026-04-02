@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta, timezone
 from src.context_fabrica.engine import DomainMemoryEngine
+from src.context_fabrica.models import Relation
 
 
 def test_query_prefers_graph_connected_record() -> None:
@@ -101,3 +102,81 @@ def test_staged_record_is_hidden_until_promoted() -> None:
     promoted_results = engine.query("flaky auth refresh", top_k=3)
     assert promoted_results
     assert promoted_results[0].record.record_id == "draft-1"
+
+
+def test_ingest_with_caller_provided_entities_and_relations() -> None:
+    engine = DomainMemoryEngine()
+    engine.ingest(
+        "The authentication service validates tokens before passing requests to the API gateway.",
+        record_id="r1",
+        entities=["auth_service", "api_gateway", "token_validator"],
+        relations=[
+            Relation("auth_service", "calls", "api_gateway", weight=1.0),
+            Relation("auth_service", "uses", "token_validator", weight=1.0),
+        ],
+    )
+    engine.ingest(
+        "The API gateway routes traffic to downstream microservices.",
+        record_id="r2",
+        entities=["api_gateway", "microservices"],
+    )
+
+    results = engine.query("How does auth_service connect to api_gateway?", top_k=2)
+    assert results
+    ids = [r.record.record_id for r in results]
+    assert "r1" in ids
+    assert any("graph_relation" in hit.rationale for hit in results)
+
+
+def test_ingest_with_caller_entities_skips_heuristic_extraction() -> None:
+    engine = DomainMemoryEngine()
+    # Text has no PascalCase or snake_case — heuristic extraction would find little
+    engine.ingest(
+        "the login flow checks credentials and returns a session",
+        record_id="r1",
+        entities=["login_flow", "credentials", "session"],
+    )
+    related = engine.related_records("r1", hops=1)
+    # entities were attached, so the record is reachable via graph
+    entities = engine._graph.record_entities("r1")
+    assert "login_flow" in entities
+    assert "session" in entities
+
+
+def test_embedding_scoring_finds_semantically_similar_records() -> None:
+    engine = DomainMemoryEngine(scoring="embedding")
+    engine.ingest(
+        "authentication middleware handles login and session tokens",
+        record_id="auth",
+        confidence=0.8,
+    )
+    engine.ingest(
+        "billing pipeline processes monthly invoices",
+        record_id="billing",
+        confidence=0.8,
+    )
+    # HashEmbedder is deterministic — tokens that overlap produce higher cosine similarity
+    results = engine.query("authentication login session", top_k=2)
+    assert results
+    assert results[0].record.record_id == "auth"
+
+
+def test_hybrid_scoring_combines_embedding_and_bm25() -> None:
+    engine = DomainMemoryEngine(scoring="hybrid")
+    engine.ingest("API Gateway timeout configuration", record_id="r1", confidence=0.7)
+    engine.ingest("database connection pooling settings", record_id="r2", confidence=0.7)
+
+    results = engine.query("API Gateway timeout", top_k=2)
+    assert results
+    assert results[0].record.record_id == "r1"
+    assert results[0].semantic_score > 0.0
+
+
+def test_bm25_only_mode_ignores_embeddings() -> None:
+    engine = DomainMemoryEngine(scoring="bm25")
+    engine.ingest("PaymentsService processes refunds", record_id="r1", confidence=0.8)
+    results = engine.query("PaymentsService refunds", top_k=2)
+    assert results
+    # Embedding scores should not be computed in bm25 mode
+    assert engine._embeddings  # embeddings are still stored
+    assert results[0].record.record_id == "r1"

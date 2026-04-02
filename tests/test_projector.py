@@ -8,6 +8,13 @@ class _FakePostgres:
         self.completed = []
         self.failed = []
 
+    @property
+    def notification_channel(self) -> str:
+        return "test_projection_jobs"
+
+    def listen_connection(self):
+        raise RuntimeError("No real Postgres in tests")
+
     def claim_projection_jobs(self, limit: int = 10):
         return [(1, "r1")]
 

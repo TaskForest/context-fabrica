@@ -1,220 +1,107 @@
+<div align="center">
+
 # context-fabrica
 
-`context-fabrica` is an open-source memory substrate for agents that need durable knowledge of a codebase or work domain.
+**A hybrid memory substrate for AI agents that need durable, queryable knowledge.**
 
-It combines:
-- semantic retrieval (BM25-like lexical baseline),
-- entity-relation graph traversal, and
-- ranking policies (recency + confidence + relation proximity)
+Semantic retrieval + knowledge graph traversal + curated memory tiers — in one library.
 
-so agents can reason about both **what is relevant** and **how concepts are connected**.
+[![CI](https://github.com/context-fabrica/context-fabrica/actions/workflows/ci.yml/badge.svg)](https://github.com/context-fabrica/context-fabrica/actions)
+[![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-## Status
+[Getting Started](docs/getting-started.md) | [Architecture](docs/architecture.md) | [Examples](examples/) | [Contributing](CONTRIBUTING.md)
 
-- `v0.1`: in-process prototype engine is working and tested
-- `v2 executable`: `Postgres + pgvector` write-authority model now supports live bootstrap, write, fetch, semantic search, promotion provenance, and projection job enqueueing
-- local Postgres bootstrap and smoke test are working
+</div>
 
-This repo is currently best understood as an **architecture-first working prototype**: the core retrieval model works, the storage split is real, and the next step is wiring full live ingestion/query execution end to end.
+---
 
-## Current Direction
+## The Problem
 
-`context-fabrica` now ships two layers:
-- an in-process prototype engine for local experimentation, and
-- a v2 storage architecture that treats `Postgres + pgvector` as write authority and `Kuzu` as a read-optimized graph projection.
+Most agent memory is flat vector search. That works for "find similar text" but fails when agents need to reason about **how concepts connect** — service dependencies, ownership chains, architectural decisions and their downstream effects.
 
-This keeps durable memory, provenance, freshness, and embeddings in Postgres while letting relation-heavy traversals move into a graph store when needed.
+Agents also need to know **where a fact came from**, **whether it's still valid**, and **how confident they should be** in it. Session recall isn't enough.
 
-The Postgres side is now executable, not just declarative: the adapter can bootstrap schema, upsert records, replace chunks, replace relations, fetch records, and run semantic search against a live local Postgres instance.
+## What context-fabrica Does
 
-Recent improvement inspired by `claude-scholar`:
-- memory is now treated as **curated in layers**, not as one flat pool
-- `staged` notes are excluded from default retrieval until promoted
-- reusable extracted templates/patterns can live in a dedicated `pattern` tier
-- a deterministic project-memory bootstrap/status script now exists for low-freedom repo setup
+```
+Query: "How does PaymentsService interact with LedgerAdapter?"
 
-## Why This Exists
-
-Engineering memory is not only about nearest text chunks. In real work, agents need relation-aware context:
-
-- service dependencies,
-- ownership and interfaces,
-- runbook to code links,
-- architectural decisions and their downstream effects.
-
-Pure embedding search often misses this node-graph structure.
-
-More importantly, agents need more than session recall. They need a memory layer that can answer:
-
-- what is true about this system,
-- where that fact came from,
-- how it connects to other facts,
-- and whether it is still valid.
-
-`context-fabrica` is built around that distinction.
-
-## What This Is Not
-
-- not just a vector database wrapper
-- not just chat history search
-- not just user-personalization memory
-- not a graph database bet disguised as an agent framework
-
-The design keeps the canonical memory model separate from any one backend so the system can evolve without rewriting the agent-facing API.
-
-## Design Principles
-
-- `write authority first`: one canonical place to store facts, provenance, and freshness
-- `relations are logical, not mandatory physical graph infra`: model relations early, choose graph storage only when needed
-- `curation over accumulation`: not every agent output deserves canonical memory
-- `promotion over raw accumulation`: durable knowledge should be curated, not just appended forever
-- `freshness beats elegance`: stale facts are more damaging than imperfect ranking
-- `agent-facing, not human-facing`: optimize for reliable autonomous reasoning, not just dashboards
-
-## Quickstart
-
-Verified package install:
-
-```bash
-python -m pip install .
+  Semantic score ──── 0.72  (embedding similarity + BM25 lexical boost)
+  Graph score ─────── 0.85  (2-hop traversal: PaymentsService → depends_on → LedgerAdapter)
+  Recency score ───── 0.91  (ingested 3 hours ago)
+  Confidence score ── 0.80  (from design-doc source)
+                      ────
+  Final score ─────── 0.81  (hybrid weighted fusion)
+  Rationale: [semantic_match, graph_relation, recent, high_confidence]
 ```
 
-Verified source-first setup for active development:
+Every query returns **scored results with full breakdowns** — your agents can reason about *why* a memory was relevant, not just *that* it was.
+
+## Key Features
+
+| Feature | Description |
+|---------|-------------|
+| **Hybrid retrieval** | Embedding cosine similarity + BM25 lexical boost + graph traversal, fused into one score |
+| **Knowledge graph** | Entity-relation extraction with multi-hop traversal (configurable depth) |
+| **Curated memory tiers** | `staged` (draft) -> `canonical` (reviewed) -> `pattern` (reusable) |
+| **Soft invalidation** | Validity windows (`valid_from`/`valid_to`) instead of hard deletes |
+| **Promotion provenance** | Track when, why, and by whom records were promoted |
+| **Caller-provided extraction** | Pass your own entities and relations from an upstream LLM — or use built-in heuristics |
+| **Scoring modes** | `hybrid` (default), `embedding`-only, or `bm25`-only |
+| **Zero mandatory deps** | Core engine runs on pure Python with `HashEmbedder`; plug in sentence-transformers or fastembed for real semantic similarity |
+| **Framework-agnostic** | Not locked to LangChain, CrewAI, or any orchestrator |
+
+## Quick Start
+
+### Install
 
 ```bash
-cd context-fabrica
-python -m venv .venv
-source .venv/bin/activate
-python -m pip install -r requirements-dev.txt
-pytest
+pip install .
 ```
 
-Runtime dependencies for the full v2 path:
+For the full Postgres + Kuzu storage layer:
 
 ```bash
-python -m pip install -r requirements-v2.txt
+pip install -r requirements-v2.txt
 ```
 
-Single happy-path demo:
-
-```bash
-context-fabrica-demo --dsn "postgresql:///context_fabrica" --project
-```
-
-See also:
-- `docs/getting-started.md`
-- `examples/basic_memory.py`
-- `examples/live_postgres_demo.py`
-
-This command will:
-- bootstrap the Postgres schema
-- ingest one demo record with automatic chunking + embedding
-- run semantic search
-- optionally project pending jobs into Kuzu
-
-Default embedding behavior:
-- no extra dependency required -> dimension-safe local `HashEmbedder`
-- if you configure `embedding_dimensions=384` and install `fastembed` manually -> `FastEmbed` is used automatically
-- if you explicitly want sentence-transformers -> install it separately and pass your own embedder instance
-
-For CLI users, the current practical split is:
-- `python -m pip install .` -> base package + installed console scripts
-- `python -m pip install -r requirements-v2.txt` -> Postgres/Kuzu runtime dependencies
-
-## Python Usage
+### Basic Usage
 
 ```python
-from context_fabrica.engine import DomainMemoryEngine
+from context_fabrica import DomainMemoryEngine
+from context_fabrica.models import Relation
 
-engine = DomainMemoryEngine()
+engine = DomainMemoryEngine()  # or DomainMemoryEngine(scoring="embedding")
+
+# Ingest with automatic entity/relation extraction
 engine.ingest(
     "PaymentsService depends on LedgerAdapter and calls RiskGateway.",
     source="design-doc",
     domain="fintech",
     confidence=0.8,
 )
+
+# Or provide your own entities/relations (e.g. from an upstream LLM)
 engine.ingest(
-    "LedgerAdapter writes transactions to event store.",
-    source="runbook",
-    domain="fintech",
+    "The auth service validates tokens before routing to the API gateway.",
+    source="architecture-review",
+    domain="platform",
+    confidence=0.9,
+    entities=["auth_service", "api_gateway", "token_validator"],
+    relations=[
+        Relation("auth_service", "calls", "api_gateway"),
+        Relation("auth_service", "uses", "token_validator"),
+    ],
 )
 
+# Query with full score breakdown
 results = engine.query("How does PaymentsService interact with LedgerAdapter?", top_k=3)
 for hit in results:
-    print(hit.record.record_id, hit.score, hit.rationale)
+    print(f"{hit.record.record_id}  score={hit.score:.2f}  {hit.rationale}")
 ```
 
-## CLI Usage
-
-Input JSONL example:
-
-```json
-{"record_id":"r1","text":"AuthService uses TokenSigner and depends on KeyStore.","domain":"platform","source":"design"}
-{"record_id":"r2","text":"TokenSigner rotates keys from KeyStore daily.","domain":"platform","source":"runbook"}
-```
-
-Run query:
-
-```bash
-context-fabrica --dataset sample.jsonl --query "How is TokenSigner connected to AuthService?" --top-k 5
-```
-
-## Where It Fits
-
-`context-fabrica` is the knowledge plane.
-
-It is a good fit underneath:
-- coding agents that need durable codebase/domain memory
-- orchestration systems that want a canonical memory backend
-- control-plane UIs that need to inspect evidence, freshness, and relations
-
-It is a poor fit as:
-- a pure hosted chatbot memory feature
-- a replacement for your agent runtime/orchestrator
-- a generic BI or human-only knowledge portal
-
-## Support Matrix
-
-Currently verified in this repo:
-
-- Python: `3.9`
-- OS: `macOS` (local verification environment)
-- Postgres: local Postgres with `pgvector` extension available
-- Graph projection: local `Kuzu` runtime installed and projector exercised successfully
-
-Known current boundaries:
-
-- installed package path is verified for the base CLI surface
-- full v2 runtime still expects `requirements-v2.txt` dependencies to be installed
-- compatibility outside the verified environment should be treated as best-effort until broader CI coverage is added
-
-## Method
-
-See `docs/architecture.md` for full design.
-
-Default hybrid score:
-
-`0.50 * semantic + 0.30 * graph + 0.12 * recency + 0.08 * confidence`
-
-## V2 Storage Architecture
-
-- `Postgres + pgvector`: source of truth for records, chunks, embeddings, provenance, validity windows, and typed relation rows
-- `Kuzu`: projected graph of entities and relation edges for multi-hop traversal
-- `HybridMemoryStore`: composes both stores and emits bootstrap/write plans
-
-Install runtime dependencies for the v2 stack:
-
-```bash
-python -m pip install -r requirements-v2.txt
-```
-
-Bootstrap and verify the local Postgres write-authority schema:
-
-```bash
-bash scripts/verify_local_postgres.sh
-```
-
-Python example:
+### Persistent Storage (Postgres + Kuzu)
 
 ```python
 from context_fabrica import HybridMemoryStore, HybridStoreSettings, KuzuSettings, PostgresSettings
@@ -222,10 +109,11 @@ from context_fabrica.models import KnowledgeRecord
 
 store = HybridMemoryStore(
     HybridStoreSettings(
-        postgres=PostgresSettings(dsn="postgresql://localhost/context_fabrica"),
-        kuzu=KuzuSettings(path="./var/context-fabrica-graph"),
+        postgres=PostgresSettings(dsn="postgresql:///context_fabrica"),
+        kuzu=KuzuSettings(path="./var/graph"),
     )
 )
+store.bootstrap_postgres()
 
 record = KnowledgeRecord(
     record_id="adr-12",
@@ -235,219 +123,195 @@ record = KnowledgeRecord(
     confidence=0.9,
 )
 
-plan = store.write_plan(record)
+# Auto-chunks text, embeds, stores in Postgres, enqueues graph projection
+store.write_text(record)
 ```
 
-Live Postgres example:
+## Architecture
+
+```
+                    +------------------+
+                    |   Agent / CLI    |
+                    +--------+---------+
+                             |
+                    +--------v---------+
+                    | DomainMemoryEngine|
+                    |  (in-process)     |
+                    +--------+---------+
+                             |
+              +--------------+--------------+
+              |              |              |
+     +--------v---+  +------v------+  +----v-------+
+     | Embedding  |  | BM25 Lexical|  | Knowledge  |
+     | Similarity |  | Index       |  | Graph      |
+     +------------+  +-------------+  +-----+------+
+                                             |
+                                      multi-hop BFS
+                                      with decay
+```
+
+**Scoring formula:**
+`0.50 * semantic + 0.30 * graph + 0.12 * recency + 0.08 * confidence`
+
+Where semantic = `0.70 * embedding + 0.30 * BM25` in hybrid mode.
+
+### Production Storage (v2)
+
+```
+  Write path                          Read path
+  ─────────                           ─────────
+  Agent                               Agent
+    |                                   |
+    v                                   v
+  Postgres + pgvector ──────────> Semantic search
+    |  (source of truth)                |
+    |                                   v
+    +──> projection_jobs ──>  Kuzu (graph projection)
+              |                         |
+              v                         v
+         LISTEN/NOTIFY ──>        Multi-hop traversal
+         Projection Worker
+```
+
+**Postgres** is the single source of truth for records, chunks, embeddings, validity windows, and provenance. **Kuzu** is an optional read-optimized graph projection for relation-heavy traversals. The projection worker uses **LISTEN/NOTIFY** for low-latency job pickup with polling fallback.
+
+## Memory Tiers
+
+Not every agent output deserves canonical memory. context-fabrica models three tiers:
+
+```
+raw observation ──> staged ──> reviewed ──> canonical
+repeated pattern ──> mined ──> pattern
+```
+
+| Tier | Purpose | In default retrieval? |
+|------|---------|----------------------|
+| `staged` | Draft notes, low-confidence observations | No |
+| `canonical` | Reviewed facts, trusted knowledge | Yes |
+| `pattern` | Reusable templates and extracted patterns | Yes |
 
 ```python
-from context_fabrica import HybridMemoryStore, HybridStoreSettings, KuzuSettings, PostgresSettings
-from context_fabrica.models import KnowledgeRecord
+# Low-confidence notes are auto-staged
+draft = engine.ingest("TODO: investigate flaky auth refresh", confidence=0.4)
+assert draft.stage == "staged"  # excluded from queries
 
-store = HybridMemoryStore(
-    HybridStoreSettings(
-        postgres=PostgresSettings(dsn="postgresql:///context_fabrica"),
-        kuzu=KuzuSettings(path="./var/context-fabrica-graph"),
-    )
-)
-
-store.bootstrap_postgres()
-
-record = KnowledgeRecord(
-    record_id="auth-live-1",
-    text="AuthService depends on TokenSigner and calls KeyStore.",
-    source="design-doc",
-    domain="platform",
-    confidence=0.9,
-)
-
-embedding = [0.01] * 1536
-store.write_record(record, chunks=[(record.text, embedding, 0)])
-hits = store.semantic_search(embedding, domain="platform", top_k=3)
+# Promote after review
+engine.promote_record(draft.record_id)  # now canonical, queryable
 ```
 
-Auto chunking + embedding example:
+## Embedder Options
+
+| Embedder | Dimensions | Dependencies | Quality |
+|----------|-----------|-------------|---------|
+| `HashEmbedder` (default) | 1536 | None | Deterministic hashing, good for dev/testing |
+| `FastEmbedEmbedder` | 384 | `fastembed` | Lightweight ML, good balance |
+| `SentenceTransformerEmbedder` | 384+ | `sentence-transformers` | Production-quality semantic similarity |
 
 ```python
-from context_fabrica import HybridMemoryStore, HybridStoreSettings, KuzuSettings, PostgresSettings
-from context_fabrica.models import KnowledgeRecord
+from context_fabrica import DomainMemoryEngine, SentenceTransformerEmbedder
 
-store = HybridMemoryStore(
-    HybridStoreSettings(
-        postgres=PostgresSettings(dsn="postgresql:///context_fabrica", embedding_dimensions=1536),
-        kuzu=KuzuSettings(path="./var/context-fabrica-graph"),
-    )
-)
-
-store.bootstrap_postgres()
-store.write_text(
-    KnowledgeRecord(
-        record_id="service-auth-1",
-        text="AuthService depends on TokenSigner and calls KeyStore. The service is owned by Platform.",
-        source="design-doc",
-        domain="platform",
-        confidence=0.9,
-    )
+# Production setup with real embeddings
+engine = DomainMemoryEngine(
+    embedder=SentenceTransformerEmbedder(),
+    scoring="hybrid",
 )
 ```
 
-Promotion provenance example:
-
-```python
-store.promote_record("draft-note-1", reason="reviewed-by-agent")
-```
-
-Projection worker examples:
+## CLI
 
 ```bash
-context-fabrica-projector --once
-context-fabrica-projector --status
-context-fabrica-projector --retry-failed
-context-fabrica-projector --requeue-record <record-id>
-context-fabrica-projector --requeue-all-canonical
-context-fabrica-projector --requeue-domain platform
-```
+# Query from JSONL dataset
+context-fabrica --dataset records.jsonl --query "How is TokenSigner connected?" --top-k 5
 
-Installed console-script examples (if your user script directory is on `PATH`):
-
-```bash
-context-fabrica-doctor --dsn "postgresql:///context_fabrica"
+# Postgres operations
 context-fabrica-bootstrap --dsn "postgresql:///context_fabrica"
+context-fabrica-doctor --dsn "postgresql:///context_fabrica"
 context-fabrica-demo --dsn "postgresql:///context_fabrica" --project
-context-fabrica-projector --status
+
+# Projection worker
+context-fabrica-projector --once            # process pending jobs
+context-fabrica-projector --status          # queue summary
+context-fabrica-projector --retry-failed    # requeue failed jobs
+
+# Project memory bootstrap
+context-fabrica-project-memory bootstrap --root .
 ```
 
-Source-first equivalents:
+## Where It Fits
+
+**Good fit:**
+- Coding agents that need durable codebase/domain memory
+- Multi-agent systems that share a canonical knowledge layer
+- Orchestration systems wanting inspectable, auditable memory
+- Control-plane UIs that need evidence, freshness, and relation visibility
+
+**Not a fit:**
+- Pure chatbot session memory
+- Replacement for your agent runtime/orchestrator
+- Generic BI or human-only knowledge portal
+
+## Governance Primitives
+
+| Primitive | Purpose |
+|-----------|---------|
+| `valid_from` / `valid_to` | Temporal validity windows, enables as-of queries |
+| `invalidate_record()` | Soft deletion with reason tracking |
+| `stage` / `kind` | Promotion routing and curated retrieval |
+| `reviewed_at` | Promotion auditability |
+| `confidence` | Trust prior in ranking |
+| `source` / `metadata` | Provenance for policy gates |
+| `supersedes` | Record replacement chains |
+
+## Project Structure
+
+```
+src/context_fabrica/
+  engine.py          # In-process hybrid retrieval engine
+  models.py          # KnowledgeRecord, Relation, QueryResult
+  policy.py          # Memory tier routing and promotion
+  entity.py          # Entity/relation extraction (heuristic)
+  index.py           # BM25 lexical index
+  graph.py           # In-memory knowledge graph with BFS traversal
+  embedding.py       # Embedder adapters (Hash, FastEmbed, SentenceTransformer)
+  storage/
+    postgres.py      # Postgres + pgvector adapter with LISTEN/NOTIFY
+    kuzu.py          # Kuzu graph projection adapter
+    hybrid.py        # Orchestrates Postgres + Kuzu writes
+    projector.py     # Background projection worker
+tests/               # pytest suite (25 tests)
+docs/                # Architecture docs and getting-started guide
+examples/            # Runnable usage examples
+sql/                 # Postgres bootstrap and smoke test SQL
+```
+
+## Development
 
 ```bash
-PYTHONPATH=src python -m context_fabrica.bootstrap_cli --root . --dsn "postgresql:///context_fabrica"
-PYTHONPATH=src python -m context_fabrica.doctor_cli --dsn "postgresql:///context_fabrica"
+git clone https://github.com/context-fabrica/context-fabrica.git
+cd context-fabrica
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements-dev.txt
+pytest
 ```
-
-See `docs/v2-architecture.md` for the exact split between the databases.
-
-Current v2 components in the repo:
-- `HybridMemoryStore` for write-plan composition
-- `PostgresPgvectorAdapter` for canonical storage schema and live execution methods
-- `KuzuGraphProjectionAdapter` for relation projection statements
-- `GraphProjectionWorker` for queued Postgres -> graph projection
-- `policy.py` for staged/canonical/pattern routing and promotion decisions
-- local Postgres bootstrap in `sql/postgres_bootstrap.sql`
-- local smoke verification in `scripts/verify_local_postgres.sh`
-- deterministic repo bootstrap/status tool in `scripts/project_memory.py` and `context-fabrica-project-memory`
-
-## Curated Memory Tiers
-
-The system now models three memory tiers:
-
-- `staged`: draft or low-confidence notes that should not influence normal retrieval yet
-- `canonical`: reviewed facts and workflow knowledge safe for agent-facing retrieval
-- `pattern`: reusable mined patterns/templates worth preserving separately from ordinary facts
-
-Typical lifecycle:
-
-```text
-raw observation -> staged -> reviewed/prompted -> canonical
-repeated reusable structure -> mined -> pattern
-```
-
-The in-memory engine and Postgres search path both respect this distinction by filtering out staged memories by default.
-
-Promotion provenance is stored in Postgres so canonicalization can be replayed and audited.
-
-## Deterministic Project Memory Tooling
-
-Inspired by claude-scholar's low-freedom project-memory scripts, `context-fabrica` now includes:
-
-```bash
-python scripts/project_memory.py bootstrap --root .
-python scripts/project_memory.py status --root .
-PYTHONPATH=src python -m context_fabrica.project_memory_cli bootstrap --root .
-```
-
-This creates a repo-local structure for:
-- `memory/staging/`
-- `memory/canonical/`
-- `memory/patterns/`
-
-and tracks it in `.context_fabrica/registry.json`.
-
-The project ships with a portable baseline inspired by proven patterns used across open-source memory systems:
-- weighted hybrid retrieval with RRF-style robustness,
-- relation-aware graph expansion (1-2 hops),
-- soft invalidation instead of hard deletes,
-- recency and trust priors in the final rank.
-
-## What Makes This Generic
-
-- No dependency on one vector DB or one graph DB.
-- In-memory defaults for easy local use and testing.
-- Clear adapters path for LanceDB/FAISS/pgvector and Neo4j/Memgraph/Kuzu.
-- Works for software, data, infra, research, and ops domains.
-
-## Project Files For Launch
-
-- `CHANGELOG.md`
-- `CONTRIBUTING.md`
-- `docs/getting-started.md`
-- `.github/workflows/ci.yml`
-
-## Current Repository Layout
-
-- `src/context_fabrica/engine.py`: in-memory prototype engine
-- `src/context_fabrica/storage/`: v2 storage adapters and hybrid write-plan logic
-- `sql/`: executable Postgres bootstrap and smoke-test SQL
-- `docs/architecture.md`: baseline hybrid retrieval method
-- `docs/v2-architecture.md`: canonical-store + projection architecture
-- `tests/`: prototype and storage-plan tests
-
-## Governance Primitives Included
-
-- `valid_from` / `valid_to` per memory record
-- `invalidate_record()` for soft deletion and supersession
-- `stage` / `kind` for promotion routing and curated retrieval
-- `reviewed_at` for promotion auditability
-- `confidence` as a trust prior
-- provenance fields (`source`, `metadata`) for future policy gates
-
-## Verification
-
-Current checks that pass in this repo:
-
-- `python3 -m pytest`
-- local `Postgres 18 + pgvector` schema bootstrap
-- local smoke insert/query for records, chunks, and relation rows
-- live Python integration test for bootstrap + write + fetch + semantic search
-- chunking and embedding unit tests
-- projection worker unit tests
-- staged-memory promotion policy tests
-- deterministic project-memory bootstrap/status script tests
-- static diagnostics with zero Python errors in `src/` and `tests/`
-
-## Research References That Shaped v0.1
-
-- GraphRAG pipeline architecture: `https://microsoft.github.io/graphrag/index/architecture/`
-- Graphiti hybrid retrieval + temporal edges: `https://github.com/getzep/graphiti`
-- Neo4j hybrid retriever: `https://github.com/neo4j/neo4j-graphrag-python`
-- Mem0 soft-invalidation patterns: `https://github.com/mem0ai/mem0`
-- Elasticsearch RRF reference: `https://www.elastic.co/docs/reference/elasticsearch/rest-apis/reciprocal-rank-fusion`
-- NetworkX personalized PageRank: `https://networkx.org/documentation/stable/reference/algorithms/generated/networkx.algorithms.link_analysis.pagerank_alg.pagerank.html`
-
-## Next Milestones
-
-1. Wire real Postgres read/write execution into the package API
-2. Add projector state observability and retry controls
-3. Add promotion review queues and agent-assisted conflict handling
-4. Add conflict handling (`supersedes`, contradiction sets, as-of queries)
-5. Add weighted-RRF and calibrated fusion modes
-6. Add tenant-aware namespaces and memory lifecycle policies (TTL/decay/archival)
 
 ## Roadmap
 
-- Pluggable embedding adapters (LanceDB, FAISS, pgvector)
-- Pluggable graph adapters (Neo4j, Memgraph)
-- Memory governance (staleness, contradiction resolution, source trust)
-- Continuous learning loops from agent outcomes
+- [ ] Configurable hybrid ranking weights via settings
+- [ ] Multi-tenant namespaces (per agent/team isolation)
+- [ ] Pluggable graph adapters (Neo4j, Memgraph)
+- [ ] Pluggable vector stores (LanceDB, FAISS)
+- [ ] Memory lifecycle policies (TTL, decay, archival)
+- [ ] Conflict handling (contradiction sets, supersession chains)
+- [ ] Weighted-RRF and calibrated fusion modes
+- [ ] Continuous learning loops from agent outcomes
+
+## References
+
+- [GraphRAG](https://microsoft.github.io/graphrag/index/architecture/) — pipeline architecture for graph-enhanced retrieval
+- [Graphiti](https://github.com/getzep/graphiti) — hybrid retrieval with temporal edges
+- [Neo4j GraphRAG](https://github.com/neo4j/neo4j-graphrag-python) — hybrid graph retriever
+- [Mem0](https://github.com/mem0ai/mem0) — soft-invalidation patterns
+- [Elasticsearch RRF](https://www.elastic.co/docs/reference/elasticsearch/rest-apis/reciprocal-rank-fusion) — reciprocal rank fusion
 
 ## License
 

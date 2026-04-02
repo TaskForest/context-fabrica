@@ -13,10 +13,18 @@ class GraphProjection:
     relations: list[Relation]
 
 
-def build_graph_projection(record: KnowledgeRecord) -> GraphProjection:
-    entities = extract_entities(record.text)
-    relations = [
-        Relation(source_entity=left, relation=rel.upper(), target_entity=right, weight=1.0)
-        for left, rel, right in extract_relations(record.text, entities)
-    ]
-    return GraphProjection(record_id=record.record_id, entities=entities, relations=relations)
+def build_graph_projection(
+    record: KnowledgeRecord,
+    *,
+    entities: list[str] | None = None,
+    relations: list[Relation] | None = None,
+) -> GraphProjection:
+    resolved_entities = entities if entities is not None else extract_entities(record.text)
+    if relations is not None:
+        resolved_relations = relations
+    else:
+        resolved_relations = [
+            Relation(source_entity=left, relation=rel.upper(), target_entity=right, weight=1.0)
+            for left, rel, right in extract_relations(record.text, resolved_entities)
+        ]
+    return GraphProjection(record_id=record.record_id, entities=resolved_entities, relations=resolved_relations)

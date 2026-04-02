@@ -2,21 +2,33 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import datetime, timezone
-from typing import Iterable
+from math import sqrt
+from typing import Iterable, Literal
 from uuid import uuid4
 
+from .embedding import Embedder, HashEmbedder
 from .entity import extract_entities, extract_relations
 from .graph import KnowledgeGraph
 from .index import LexicalSemanticIndex
 from .models import KnowledgeRecord, QueryResult, Relation
 from .policy import decide_memory_tier, promote_record
 
+ScoringMode = Literal["hybrid", "embedding", "bm25"]
+
 
 class DomainMemoryEngine:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        embedder: Embedder | None = None,
+        scoring: ScoringMode = "hybrid",
+    ) -> None:
         self._records: dict[str, KnowledgeRecord] = {}
         self._index = LexicalSemanticIndex()
         self._graph = KnowledgeGraph()
+        self._embedder = embedder or HashEmbedder()
+        self._embeddings: dict[str, list[float]] = {}
+        self._scoring = scoring
         self._weights = {
             "semantic": 0.50,
             "graph": 0.30,
@@ -39,6 +51,8 @@ class DomainMemoryEngine:
         metadata: dict[str, object] | None = None,
         record_id: str | None = None,
         auto_stage: bool = True,
+        entities: list[str] | None = None,
+        relations: list[Relation] | None = None,
     ) -> KnowledgeRecord:
         rid = record_id or str(uuid4())
         record = KnowledgeRecord(
@@ -57,11 +71,17 @@ class DomainMemoryEngine:
             record.metadata.setdefault("promotion_rationale", decision.rationale)
         self._records[rid] = record
         self._index.upsert(rid, text)
+        self._embeddings[rid] = self._embedder.embed(text)
 
-        entities = extract_entities(text)
-        self._graph.attach_record_entities(rid, entities)
-        for left, rel, right in extract_relations(text, entities):
-            self._graph.add_relation(Relation(left, rel, right, weight=1.0))
+        resolved_entities = entities if entities is not None else extract_entities(text)
+        self._graph.attach_record_entities(rid, resolved_entities)
+
+        if relations is not None:
+            for rel in relations:
+                self._graph.add_relation(rel)
+        else:
+            for left, rel_type, right in extract_relations(text, resolved_entities):
+                self._graph.add_relation(Relation(left, rel_type, right, weight=1.0))
 
         return record
 
@@ -79,17 +99,19 @@ class DomainMemoryEngine:
         ref_now = now or datetime.now(tz=timezone.utc)
         point_in_time = as_of or ref_now
 
-        semantic = self._index.score(prompt)
+        bm25_scores = self._index.score(prompt)
+        embedding_scores = self._embedding_scores(prompt) if self._scoring != "bm25" else {}
         query_entities = extract_entities(prompt)
         graph = self._graph.records_for_entities(query_entities, hops=hops)
 
-        all_ids = set(semantic) | set(graph)
+        all_ids = set(bm25_scores) | set(embedding_scores) | set(graph)
         if domain:
             all_ids = {rid for rid in all_ids if self._records[rid].domain == domain}
         all_ids = {rid for rid in all_ids if self._is_valid(self._records[rid], point_in_time)}
         if not include_staged:
             all_ids = {rid for rid in all_ids if self._records[rid].stage != "staged"}
 
+        semantic = self._fuse_semantic(bm25_scores, embedding_scores, all_ids)
         sem_max = max(semantic.values(), default=1.0)
         graph_max = max(graph.values(), default=1.0)
 
@@ -163,3 +185,41 @@ class DomainMemoryEngine:
         if record.valid_to is not None and at > record.valid_to:
             return False
         return True
+
+    @staticmethod
+    def _cosine_similarity(a: list[float], b: list[float]) -> float:
+        dot = sum(x * y for x, y in zip(a, b))
+        norm_a = sqrt(sum(x * x for x in a)) or 1.0
+        norm_b = sqrt(sum(x * x for x in b)) or 1.0
+        return max(dot / (norm_a * norm_b), 0.0)
+
+    def _embedding_scores(self, prompt: str) -> dict[str, float]:
+        query_vec = self._embedder.embed(prompt)
+        scores: dict[str, float] = {}
+        for rid, vec in self._embeddings.items():
+            sim = self._cosine_similarity(query_vec, vec)
+            if sim > 0.0:
+                scores[rid] = sim
+        return scores
+
+    def _fuse_semantic(
+        self,
+        bm25: dict[str, float],
+        embedding: dict[str, float],
+        candidates: set[str],
+    ) -> dict[str, float]:
+        """Fuse BM25 and embedding scores based on scoring mode."""
+        if self._scoring == "bm25":
+            return {rid: bm25.get(rid, 0.0) for rid in candidates if bm25.get(rid, 0.0) > 0}
+        if self._scoring == "embedding":
+            return {rid: embedding.get(rid, 0.0) for rid in candidates if embedding.get(rid, 0.0) > 0}
+        # hybrid: embedding as primary (70%), BM25 as lexical boost (30%)
+        fused: dict[str, float] = {}
+        for rid in candidates:
+            emb = embedding.get(rid, 0.0)
+            bm = bm25.get(rid, 0.0)
+            # Normalize BM25 relative to its own max for fusion
+            score = 0.7 * emb + 0.3 * bm
+            if score > 0.0:
+                fused[rid] = score
+        return fused

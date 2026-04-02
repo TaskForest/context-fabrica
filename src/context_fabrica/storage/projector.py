@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import select
+from contextlib import suppress
 from dataclasses import dataclass
 from threading import Event
 from time import sleep
-from typing import Protocol, cast
+from typing import Any, Protocol, cast
 
 from ..models import KnowledgeRecord
 
@@ -28,6 +30,11 @@ class ProjectionPostgres(Protocol):
     def requeue_canonical_projection(self, domain: str | None = None) -> list[tuple[int, str]]: ...
 
     def projection_queue_summary(self) -> dict[str, int]: ...
+
+    @property
+    def notification_channel(self) -> str: ...
+
+    def listen_connection(self) -> Any: ...
 
 
 class ProjectionGraph(Protocol):
@@ -77,8 +84,32 @@ class GraphProjectionWorker:
 
     def run_forever(self, *, poll_interval: float = 2.0, batch_size: int = 10, stop_event: Event | None = None) -> None:
         event = stop_event or Event()
+        listen_conn: Any | None = None
+        try:
+            listen_conn = self.postgres.listen_connection()
+        except Exception:  # noqa: BLE001
+            listen_conn = None
+
         while not event.is_set():
             results = self.process_pending(limit=batch_size)
             if results:
                 continue
-            sleep(poll_interval)
+            # Wait for NOTIFY or fall back to poll_interval timeout
+            if listen_conn is not None:
+                try:
+                    ready, _, _ = select.select([listen_conn.fileno()], [], [], poll_interval)
+                    if ready:
+                        # Drain all pending notifications
+                        with suppress(Exception):
+                            for _notify in listen_conn.notifies():
+                                break  # wake up is enough, process_pending handles the work
+                except Exception:  # noqa: BLE001
+                    # Connection lost — fall back to polling
+                    listen_conn = None
+                    sleep(poll_interval)
+            else:
+                sleep(poll_interval)
+
+        if listen_conn is not None:
+            with suppress(Exception):
+                listen_conn.close()
