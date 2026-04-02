@@ -6,7 +6,7 @@
 
 Semantic retrieval + knowledge graph traversal + curated memory tiers — in one library.
 
-[![CI](https://github.com/context-fabrica/context-fabrica/actions/workflows/ci.yml/badge.svg)](https://github.com/context-fabrica/context-fabrica/actions)
+[![CI](https://github.com/jimmdd/context-fabrica/actions/workflows/ci.yml/badge.svg)](https://github.com/jimmdd/context-fabrica/actions)
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
@@ -38,6 +38,130 @@ Query: "How does PaymentsService interact with LedgerAdapter?"
 
 Every query returns **scored results with full breakdowns** — your agents can reason about *why* a memory was relevant, not just *that* it was.
 
+---
+
+## Core vs Extensible
+
+context-fabrica separates **what is core** (the retrieval model, memory semantics, and governance) from **what is pluggable** (storage backends, embedders, and entity extraction).
+
+```
+  ┌──────────────────────────────────────────────────────────┐
+  │                      CORE (fixed)                        │
+  │                                                          │
+  │  DomainMemoryEngine        Hybrid scoring formula        │
+  │  KnowledgeRecord model     Memory tiers & promotion      │
+  │  Validity windows          Provenance tracking           │
+  │  BM25 lexical index        Knowledge graph traversal     │
+  └──────────────────────────────────────────────────────────┘
+                          │
+              ┌───────────┼───────────┐
+              ▼           ▼           ▼
+  ┌──────────────┐ ┌───────────┐ ┌──────────────┐
+  │ RecordStore  │ │ Embedder  │ │ GraphStore   │
+  │  (protocol)  │ │ (protocol)│ │  (protocol)  │
+  └──────┬───────┘ └─────┬─────┘ └──────┬───────┘
+         │               │              │
+   ┌─────┴─────┐   ┌─────┴─────┐  ┌────┴─────┐
+   │  SQLite   │   │   Hash    │  │   Kuzu   │
+   │  Postgres │   │ FastEmbed │  │  Neo4j*  │
+   │  Custom   │   │ Sentence  │  │  Custom  │
+   └───────────┘   │ Transformr│  └──────────┘
+                   │  Custom   │    * planned
+                   └───────────┘
+```
+
+**Core** — the retrieval model, ranking formula, memory lifecycle, and governance primitives. These define what context-fabrica *is* and are not meant to be swapped out.
+
+**Extensible** — storage backends, embedding providers, and graph stores are pluggable via Python protocols. Implement the interface, pass it in.
+
+---
+
+## Storage Options
+
+Pick the backend that matches your scale. No code changes needed — the `HybridMemoryStore` API is the same regardless of backend.
+
+| Backend | Dependencies | Server required? | Best for |
+|---------|-------------|-----------------|----------|
+| **SQLite** (built-in) | None (stdlib) | No | Local dev, single-agent, getting started |
+| **Postgres + pgvector** | `psycopg`, `pgvector` | Yes | Production, multi-agent, teams |
+| **Kuzu** (optional add-on) | `kuzu` | No | Graph-heavy traversal at scale |
+| **Custom** | You decide | You decide | Bring your own (LanceDB, DuckDB, etc.) |
+
+### SQLite — zero setup, no server
+
+```bash
+pip install .
+```
+
+```python
+from context_fabrica import HybridMemoryStore, SQLiteRecordStore
+
+store = HybridMemoryStore(store=SQLiteRecordStore("./memory.db"))
+store.bootstrap()
+
+# Same API as Postgres — write, query, promote, search
+store.write_text(record)
+results = store.semantic_search(query_embedding, top_k=5)
+```
+
+SQLite stores records, chunks, embeddings, relations, and promotions in a single file. Semantic search uses brute-force cosine similarity — fast enough for local dev and single-agent workloads up to ~50k records.
+
+### Postgres + pgvector — production scale
+
+```bash
+pip install -r requirements-v2.txt
+```
+
+```python
+from context_fabrica import HybridMemoryStore, HybridStoreSettings, PostgresSettings, KuzuSettings
+
+store = HybridMemoryStore(
+    HybridStoreSettings(
+        postgres=PostgresSettings(dsn="postgresql:///context_fabrica"),
+        kuzu=KuzuSettings(path="./var/graph"),
+    )
+)
+store.bootstrap()
+```
+
+Postgres handles records, chunks, HNSW-indexed vector search, validity windows, and provenance. Kuzu is optional — if you don't need multi-hop graph traversal at scale, skip it.
+
+### Postgres without Kuzu
+
+```python
+from context_fabrica import HybridMemoryStore
+from context_fabrica.storage.postgres import PostgresPgvectorAdapter
+
+store = HybridMemoryStore(
+    store=PostgresPgvectorAdapter(PostgresSettings(dsn="postgresql:///context_fabrica"))
+)
+store.bootstrap()
+# No graph projection — relations still stored in Postgres, just no Kuzu traversal
+```
+
+### Bring your own backend
+
+Implement the `RecordStore` protocol and pass it in:
+
+```python
+from context_fabrica.adapters import RecordStore
+
+class MyLanceDBStore:
+    """Implements RecordStore protocol."""
+    def bootstrap(self) -> None: ...
+    def upsert_record(self, record: KnowledgeRecord) -> None: ...
+    def fetch_record(self, record_id: str) -> KnowledgeRecord | None: ...
+    def replace_chunks(self, record_id: str, chunks: list) -> None: ...
+    def replace_relations(self, record_id: str, relations: list) -> None: ...
+    def record_promotion(self, source_id: str, target_id: str, reason: str, promoted_at: datetime) -> None: ...
+    def semantic_search(self, query_embedding: list[float], *, domain: str | None, top_k: int) -> list[QueryResult]: ...
+    def enqueue_projection(self, record_id: str) -> None: ...
+
+store = HybridMemoryStore(store=MyLanceDBStore(), graph=MyGraphStore())  # graph is optional
+```
+
+---
+
 ## Key Features
 
 | Feature | Description |
@@ -49,24 +173,12 @@ Every query returns **scored results with full breakdowns** — your agents can 
 | **Promotion provenance** | Track when, why, and by whom records were promoted |
 | **Caller-provided extraction** | Pass your own entities and relations from an upstream LLM — or use built-in heuristics |
 | **Scoring modes** | `hybrid` (default), `embedding`-only, or `bm25`-only |
-| **Zero mandatory deps** | Core engine runs on pure Python with `HashEmbedder`; plug in sentence-transformers or fastembed for real semantic similarity |
+| **Pluggable storage** | SQLite (built-in), Postgres + pgvector, or bring your own via `RecordStore` protocol |
+| **Pluggable embedders** | HashEmbedder (zero-dep), FastEmbed, SentenceTransformers, or bring your own via `Embedder` protocol |
+| **Optional graph store** | Kuzu ships as default, but graph projection is fully optional |
 | **Framework-agnostic** | Not locked to LangChain, CrewAI, or any orchestrator |
 
 ## Quick Start
-
-### Install
-
-```bash
-pip install .
-```
-
-For the full Postgres + Kuzu storage layer:
-
-```bash
-pip install -r requirements-v2.txt
-```
-
-### Basic Usage
 
 ```python
 from context_fabrica import DomainMemoryEngine
@@ -101,32 +213,6 @@ for hit in results:
     print(f"{hit.record.record_id}  score={hit.score:.2f}  {hit.rationale}")
 ```
 
-### Persistent Storage (Postgres + Kuzu)
-
-```python
-from context_fabrica import HybridMemoryStore, HybridStoreSettings, KuzuSettings, PostgresSettings
-from context_fabrica.models import KnowledgeRecord
-
-store = HybridMemoryStore(
-    HybridStoreSettings(
-        postgres=PostgresSettings(dsn="postgresql:///context_fabrica"),
-        kuzu=KuzuSettings(path="./var/graph"),
-    )
-)
-store.bootstrap_postgres()
-
-record = KnowledgeRecord(
-    record_id="adr-12",
-    text="AuthService depends on TokenSigner and calls KeyStore.",
-    source="adr",
-    domain="platform",
-    confidence=0.9,
-)
-
-# Auto-chunks text, embeds, stores in Postgres, enqueues graph projection
-store.write_text(record)
-```
-
 ## Architecture
 
 ```
@@ -144,10 +230,10 @@ store.write_text(record)
      +--------v---+  +------v------+  +----v-------+
      | Embedding  |  | BM25 Lexical|  | Knowledge  |
      | Similarity |  | Index       |  | Graph      |
-     +------------+  +-------------+  +-----+------+
-                                             |
-                                      multi-hop BFS
-                                      with decay
+     +------+-----+  +-------------+  +-----+------+
+            |                                |
+       (pluggable)                     multi-hop BFS
+                                       with decay
 ```
 
 **Scoring formula:**
@@ -155,25 +241,25 @@ store.write_text(record)
 
 Where semantic = `0.70 * embedding + 0.30 * BM25` in hybrid mode.
 
-### Production Storage (v2)
+### Persistent Storage
 
 ```
-  Write path                          Read path
-  ─────────                           ─────────
-  Agent                               Agent
-    |                                   |
-    v                                   v
-  Postgres + pgvector ──────────> Semantic search
-    |  (source of truth)                |
-    |                                   v
-    +──> projection_jobs ──>  Kuzu (graph projection)
-              |                         |
-              v                         v
-         LISTEN/NOTIFY ──>        Multi-hop traversal
-         Projection Worker
+  Agent
+    |
+    v
+  HybridMemoryStore ─────── same API regardless of backend
+    |
+    ├── RecordStore (protocol)
+    │     ├── SQLiteRecordStore     ← zero setup, single file
+    │     ├── PostgresPgvectorAdapter ← production, HNSW indexing
+    │     └── YourCustomAdapter     ← implement the protocol
+    │
+    └── GraphStore (protocol, optional)
+          ├── KuzuGraphProjectionAdapter ← embedded graph
+          └── YourCustomGraph            ← implement the protocol
 ```
 
-**Postgres** is the single source of truth for records, chunks, embeddings, validity windows, and provenance. **Kuzu** is an optional read-optimized graph projection for relation-heavy traversals. The projection worker uses **LISTEN/NOTIFY** for low-latency job pickup with polling fallback.
+When using Postgres, the projection worker uses **LISTEN/NOTIFY** for low-latency graph projection job pickup with polling fallback.
 
 ## Memory Tiers
 
@@ -266,19 +352,21 @@ context-fabrica-project-memory bootstrap --root .
 
 ```
 src/context_fabrica/
-  engine.py          # In-process hybrid retrieval engine
-  models.py          # KnowledgeRecord, Relation, QueryResult
-  policy.py          # Memory tier routing and promotion
-  entity.py          # Entity/relation extraction (heuristic)
-  index.py           # BM25 lexical index
-  graph.py           # In-memory knowledge graph with BFS traversal
-  embedding.py       # Embedder adapters (Hash, FastEmbed, SentenceTransformer)
+  engine.py          # In-process hybrid retrieval engine (core)
+  models.py          # KnowledgeRecord, Relation, QueryResult (core)
+  adapters.py        # RecordStore, GraphStore, Embedder protocols (core)
+  policy.py          # Memory tier routing and promotion (core)
+  entity.py          # Entity/relation extraction heuristics (core, bypassable)
+  index.py           # BM25 lexical index (core)
+  graph.py           # In-memory knowledge graph with BFS traversal (core)
+  embedding.py       # Embedder adapters: Hash, FastEmbed, SentenceTransformer (pluggable)
   storage/
-    postgres.py      # Postgres + pgvector adapter with LISTEN/NOTIFY
-    kuzu.py          # Kuzu graph projection adapter
-    hybrid.py        # Orchestrates Postgres + Kuzu writes
+    sqlite.py        # SQLite record store — zero deps (pluggable)
+    postgres.py      # Postgres + pgvector adapter with LISTEN/NOTIFY (pluggable)
+    kuzu.py          # Kuzu graph projection adapter (pluggable, optional)
+    hybrid.py        # HybridMemoryStore — orchestrates any RecordStore + GraphStore
     projector.py     # Background projection worker
-tests/               # pytest suite (25 tests)
+tests/               # pytest suite (37 tests)
 docs/                # Architecture docs and getting-started guide
 examples/            # Runnable usage examples
 sql/                 # Postgres bootstrap and smoke test SQL
@@ -287,7 +375,7 @@ sql/                 # Postgres bootstrap and smoke test SQL
 ## Development
 
 ```bash
-git clone https://github.com/context-fabrica/context-fabrica.git
+git clone https://github.com/jimmdd/context-fabrica.git
 cd context-fabrica
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements-dev.txt
@@ -296,10 +384,15 @@ pytest
 
 ## Roadmap
 
+- [x] Pluggable storage backends via `RecordStore` protocol
+- [x] SQLite adapter for zero-setup persistent storage
+- [x] Optional graph projection (Kuzu not required)
+- [x] Caller-provided entity/relation extraction
+- [x] Configurable scoring modes (hybrid, embedding, bm25)
 - [ ] Configurable hybrid ranking weights via settings
 - [ ] Multi-tenant namespaces (per agent/team isolation)
 - [ ] Pluggable graph adapters (Neo4j, Memgraph)
-- [ ] Pluggable vector stores (LanceDB, FAISS)
+- [ ] Additional vector stores (LanceDB, FAISS)
 - [ ] Memory lifecycle policies (TTL, decay, archival)
 - [ ] Conflict handling (contradiction sets, supersession chains)
 - [ ] Weighted-RRF and calibrated fusion modes

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import Any
 
+from ..adapters import GraphStore, RecordStore
 from ..config import HybridStoreSettings
 from ..embedding import Embedder, build_default_embedder, chunk_text
 from ..models import KnowledgeRecord
@@ -13,44 +15,61 @@ from .postgres import PostgresPgvectorAdapter
 
 @dataclass(frozen=True)
 class HybridWritePlan:
-    postgres_record_statement: str
-    postgres_record_payload: tuple[object, ...]
-    postgres_relation_rows: list[tuple[str, str, str, str, float]]
-    kuzu_projection_statements: list[str]
+    record_id: str
     graph_projection: GraphProjection
 
 
 class HybridMemoryStore:
-    def __init__(self, settings: HybridStoreSettings, *, embedder: Embedder | None = None) -> None:
-        self.settings = settings
-        self.postgres = PostgresPgvectorAdapter(settings.postgres)
-        self.kuzu = KuzuGraphProjectionAdapter(settings.kuzu)
-        self.embedder = embedder or build_default_embedder(dimensions=settings.postgres.embedding_dimensions)
+    """Orchestrates record storage with optional graph projection.
 
-    def bootstrap_plan(self) -> dict[str, list[str]]:
-        return {
-            "postgres": self.postgres.bootstrap_statements(),
-            "kuzu": self.kuzu.bootstrap_statements(),
-        }
+    Accepts any RecordStore and optional GraphStore implementation.
+    Ships with Postgres + Kuzu as defaults, but works with SQLite
+    or any custom adapter implementing the protocols.
 
+    Construction options:
+
+        # Protocol-based (recommended)
+        store = HybridMemoryStore(store=SQLiteRecordStore("./memory.db"))
+        store = HybridMemoryStore(store=my_postgres, graph=my_kuzu)
+
+        # Settings-based (backward-compatible, builds Postgres + Kuzu)
+        store = HybridMemoryStore(settings=HybridStoreSettings(...))
+    """
+
+    def __init__(
+        self,
+        settings: HybridStoreSettings | None = None,
+        *,
+        store: RecordStore | None = None,
+        graph: GraphStore | None = None,
+        embedder: Embedder | None = None,
+    ) -> None:
+        if store is not None:
+            self.store: RecordStore = store
+            self.graph: GraphStore | None = graph
+            dims = 1536
+        elif settings is not None:
+            self.store = PostgresPgvectorAdapter(settings.postgres)
+            self.graph = KuzuGraphProjectionAdapter(settings.kuzu)
+            dims = settings.postgres.embedding_dimensions
+        else:
+            raise TypeError("Provide either 'store' or 'settings'")
+
+        self.embedder = embedder or build_default_embedder(dimensions=dims)
+
+    def bootstrap(self) -> None:
+        self.store.bootstrap()
+        if self.graph is not None:
+            self.graph.bootstrap()
+
+    # Keep backward-compatible alias
     def bootstrap_postgres(self) -> None:
-        self.postgres.bootstrap()
+        self.store.bootstrap()
 
     def write_plan(self, record: KnowledgeRecord) -> HybridWritePlan:
         projection = build_graph_projection(record)
-        relation_rows = [
-            (record.record_id, rel.source_entity, rel.relation, rel.target_entity, rel.weight)
-            for rel in projection.relations
-        ]
         return HybridWritePlan(
-            postgres_record_statement=self.postgres.upsert_record_statement(),
-            postgres_record_payload=self.postgres.upsert_record_payload(record),
-            postgres_relation_rows=relation_rows,
-            kuzu_projection_statements=self.kuzu.project_statements(
-                projection,
-                domain=record.domain,
-                source=record.source,
-            ),
+            record_id=record.record_id,
             graph_projection=projection,
         )
 
@@ -61,13 +80,20 @@ class HybridMemoryStore:
         chunks: list[tuple[str, list[float], int]] | None = None,
     ) -> HybridWritePlan:
         plan = self.write_plan(record)
-        self.postgres.upsert_record(record)
+        self.store.upsert_record(record)
         if chunks is not None:
-            self.postgres.replace_chunks(record.record_id, chunks)
-        if plan.postgres_relation_rows:
-            self.postgres.replace_relations(record.record_id, plan.postgres_relation_rows)
-        if record.stage in {"canonical", "pattern"}:
-            self.postgres.enqueue_projection(record.record_id)
+            self.store.replace_chunks(record.record_id, chunks)
+
+        relation_rows = [
+            (record.record_id, rel.source_entity, rel.relation, rel.target_entity, rel.weight)
+            for rel in plan.graph_projection.relations
+        ]
+        if relation_rows:
+            self.store.replace_relations(record.record_id, relation_rows)
+
+        if record.stage in {"canonical", "pattern"} and self.graph is not None:
+            self.store.enqueue_projection(record.record_id)
+
         return plan
 
     def write_text(
@@ -92,16 +118,17 @@ class HybridMemoryStore:
         reviewed_at: datetime | None = None,
         reason: str = "manual_review",
     ) -> KnowledgeRecord:
-        record = self.postgres.fetch_record(source_record_id)
+        record = self.store.fetch_record(source_record_id)
         if record is None:
             raise KeyError(source_record_id)
         record.stage = "canonical"
         record.reviewed_at = reviewed_at or datetime.now(tz=timezone.utc)
         if record.kind == "note":
             record.kind = "fact"
-        self.postgres.upsert_record(record)
-        self.postgres.record_promotion(source_record_id, record.record_id, reason, record.reviewed_at)
-        self.postgres.enqueue_projection(record.record_id)
+        self.store.upsert_record(record)
+        self.store.record_promotion(source_record_id, record.record_id, reason, record.reviewed_at)
+        if self.graph is not None:
+            self.store.enqueue_projection(record.record_id)
         return record
 
     def semantic_search(
@@ -110,5 +137,5 @@ class HybridMemoryStore:
         *,
         domain: str | None = None,
         top_k: int = 5,
-    ) -> list:
-        return self.postgres.semantic_search(query_embedding, domain=domain, top_k=top_k)
+    ) -> list[Any]:
+        return self.store.semantic_search(query_embedding, domain=domain, top_k=top_k)

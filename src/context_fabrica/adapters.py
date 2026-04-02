@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Protocol
+from typing import Any, Protocol
+
+from .models import KnowledgeRecord, QueryResult
 
 
 @dataclass
@@ -12,18 +14,46 @@ class RetrievedChunk:
     source: str
 
 
-class VectorStoreAdapter(Protocol):
-    def upsert(self, record_id: str, text: str, metadata: dict[str, object]) -> None: ...
+class RecordStore(Protocol):
+    """Protocol for persistent record storage backends.
 
-    def search(self, query: str, top_k: int) -> list[RetrievedChunk]: ...
+    Implement this to plug in any storage backend (SQLite, Postgres,
+    DuckDB, etc.) into HybridMemoryStore.
+    """
+
+    def bootstrap(self) -> None: ...
+
+    def upsert_record(self, record: KnowledgeRecord) -> None: ...
+
+    def fetch_record(self, record_id: str) -> KnowledgeRecord | None: ...
+
+    def replace_chunks(self, record_id: str, chunks: list[tuple[str, list[float], int]]) -> None: ...
+
+    def replace_relations(self, record_id: str, relations: list[tuple[str, str, str, str, float]]) -> None: ...
+
+    def record_promotion(self, source_record_id: str, target_record_id: str, reason: str, promoted_at: datetime) -> None: ...
+
+    def semantic_search(
+        self,
+        query_embedding: list[float],
+        *,
+        domain: str | None = None,
+        top_k: int = 5,
+    ) -> list[QueryResult]: ...
+
+    def enqueue_projection(self, record_id: str) -> None: ...
 
 
-class GraphStoreAdapter(Protocol):
-    def attach_entities(self, record_id: str, entities: list[str]) -> None: ...
+class GraphStore(Protocol):
+    """Protocol for optional graph projection backends.
 
-    def add_relation(self, left: str, relation: str, right: str, weight: float = 1.0) -> None: ...
+    Implement this to plug in any graph store (Kuzu, Neo4j, Memgraph,
+    etc.) for relation-heavy multi-hop traversal.
+    """
 
-    def neighbor_records(self, entities: list[str], hops: int) -> dict[str, float]: ...
+    def bootstrap(self) -> None: ...
+
+    def project(self, projection: Any, *, domain: str, source: str) -> None: ...
 
 
 class TrustPolicyAdapter(Protocol):
