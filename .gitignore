@@ -8,3 +8,4 @@ var/
 tmp_meta/
 .context_fabrica/
 build/
+dist/

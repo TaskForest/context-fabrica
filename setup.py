@@ -1,11 +1,16 @@
+from pathlib import Path
+
 from setuptools import setup
+
+
+README = Path(__file__).with_name("README.md").read_text(encoding="utf-8")
 
 
 setup(
     name="context-fabrica",
     version="0.3.0",
     description="Hybrid graph + semantic memory substrate for AI agents",
-    long_description=open("README.md", encoding="utf-8").read(),
+    long_description=README,
     long_description_content_type="text/markdown",
     python_requires=">=3.9",
     author="TaskForest",
@@ -17,7 +22,10 @@ setup(
         "Changelog": "https://github.com/TaskForest/context-fabrica/blob/main/CHANGELOG.md",
     },
     license="MIT",
+    license_files=("LICENSE",),
+    keywords=["ai", "agents", "memory", "rag", "knowledge-graph", "retrieval"],
     package_dir={"": "src"},
+    include_package_data=True,
     packages=[
         "context_fabrica",
         "context_fabrica.storage",
@@ -36,9 +44,8 @@ setup(
         ],
     },
     classifiers=[
-        "Development Status :: 3 - Alpha",
+        "Development Status :: 4 - Beta",
         "Intended Audience :: Developers",
-        "License :: OSI Approved :: MIT License",
         "Programming Language :: Python :: 3",
         "Programming Language :: Python :: 3.9",
         "Programming Language :: Python :: 3.10",
