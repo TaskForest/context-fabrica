@@ -35,6 +35,16 @@ context-fabrica-doctor --help
 2. The `publish-pypi.yml` workflow will build, run `twine check`, and publish to PyPI.
 3. Approve the `pypi` GitHub environment if required.
 
+## GitHub repository setup required once
+
+Before the first PyPI publish, a repository admin must create the `pypi` environment in GitHub:
+
+1. Go to `Settings -> Environments`
+2. Create an environment named `pypi`
+3. Optionally require reviewers for manual approval
+
+I attempted to create it automatically, but the current GitHub token does not have repository admin rights.
+
 ## Trusted publishing
 
 Configure PyPI trusted publishing for:

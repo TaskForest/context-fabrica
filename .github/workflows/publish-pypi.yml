@@ -9,6 +9,9 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       id-token: write  # Required for trusted publishing
+    environment:
+      name: pypi
+      url: https://pypi.org/p/context-fabrica
     steps:
       - uses: actions/checkout@v5
 
