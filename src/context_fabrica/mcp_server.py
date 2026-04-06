@@ -3,9 +3,13 @@
 Implements the Model Context Protocol over stdio using JSON-RPC 2.0.
 No external dependencies beyond context-fabrica itself.
 
+Memories are persisted to SQLite (or Postgres via --dsn) and survive
+server restarts. BM25 and graph indexes bootstrap lazily on first query.
+
 Usage:
     context-fabrica-mcp --db ./memory.db
     context-fabrica-mcp --db ./memory.db --namespace myproject
+    context-fabrica-mcp --dsn postgresql:///context_fabrica
 """
 from __future__ import annotations
 
@@ -13,15 +17,15 @@ import argparse
 import json
 import logging
 import sys
-from datetime import datetime, timezone
 from typing import Any
 
-from .engine import DomainMemoryEngine
 from .models import KnowledgeRecord
+from .storage.hybrid import HybridMemoryStore
+from .storage.sqlite import SQLiteRecordStore
 
 PROTOCOL_VERSION = "2024-11-05"
 SERVER_NAME = "context-fabrica"
-SERVER_VERSION = "0.5.0"
+SERVER_VERSION = "1.0.0"
 
 logging.basicConfig(level=logging.DEBUG, stream=sys.stderr, format="%(levelname)s: %(message)s")
 log = logging.getLogger(SERVER_NAME)
@@ -134,12 +138,42 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "required": ["old_record_id", "new_text"],
             },
         },
+        {
+            "name": "related",
+            "description": (
+                "Find records related to a given record via the knowledge graph. "
+                "Use this to explore connections and discover how concepts link together."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "record_id": {"type": "string", "description": "ID of the record to find relations for"},
+                    "hops": {"type": "integer", "description": "Graph traversal depth", "default": 1, "minimum": 1, "maximum": 5},
+                    "top_k": {"type": "integer", "description": "Maximum related records to return", "default": 5, "minimum": 1, "maximum": 20},
+                },
+                "required": ["record_id"],
+            },
+        },
+        {
+            "name": "history",
+            "description": (
+                "Show the supersession chain for a record — the full history of how a "
+                "fact evolved over time. Use this to understand why a memory was updated."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "record_id": {"type": "string", "description": "ID of the record to trace history for"},
+                },
+                "required": ["record_id"],
+            },
+        },
     ]
 
 
 class ContextFabricaMCP:
-    def __init__(self, engine: DomainMemoryEngine, namespace: str = "default") -> None:
-        self._engine = engine
+    def __init__(self, store: HybridMemoryStore, namespace: str = "default") -> None:
+        self._store = store
         self._namespace = namespace
 
     def handle_message(self, msg: dict[str, Any]) -> dict[str, Any] | None:
@@ -147,7 +181,6 @@ class ContextFabricaMCP:
         request_id = msg.get("id")
         params = msg.get("params", {})
 
-        # Notifications (no id) — no response needed
         if request_id is None:
             return None
 
@@ -194,6 +227,8 @@ class ContextFabricaMCP:
             "promote": self._tool_promote,
             "invalidate": self._tool_invalidate,
             "supersede": self._tool_supersede,
+            "related": self._tool_related,
+            "history": self._tool_history,
         }
 
         handler = dispatch.get(name)
@@ -211,7 +246,7 @@ class ContextFabricaMCP:
     # ── Tools ──
 
     def _tool_remember(self, args: dict[str, Any]) -> dict[str, Any]:
-        record = self._engine.ingest(
+        record = self._store.ingest(
             args["text"],
             source=args.get("source", "agent"),
             domain=args.get("domain", "global"),
@@ -225,7 +260,7 @@ class ContextFabricaMCP:
         )
 
     def _tool_recall(self, args: dict[str, Any]) -> dict[str, Any]:
-        results = self._engine.query(
+        results = self._store.query(
             args["query"],
             top_k=args.get("top_k", 5),
             domain=args.get("domain"),
@@ -247,7 +282,7 @@ class ContextFabricaMCP:
         return _tool_result("\n\n".join(lines))
 
     def _tool_synthesize(self, args: dict[str, Any]) -> dict[str, Any]:
-        observation = self._engine.synthesize_observation(
+        observation = self._store.synthesize_observation(
             args["record_ids"],
             record_id=args.get("record_id"),
         )
@@ -258,18 +293,18 @@ class ContextFabricaMCP:
         )
 
     def _tool_promote(self, args: dict[str, Any]) -> dict[str, Any]:
-        record = self._engine.promote_record(args["record_id"])
+        record = self._store.promote_record(args["record_id"])
         return _tool_result(f"Promoted {record.record_id} to stage={record.stage}")
 
     def _tool_invalidate(self, args: dict[str, Any]) -> dict[str, Any]:
-        self._engine.invalidate_record(
+        self._store.invalidate_record(
             args["record_id"],
             reason=args.get("reason", "obsolete"),
         )
         return _tool_result(f"Invalidated {args['record_id']}")
 
     def _tool_supersede(self, args: dict[str, Any]) -> dict[str, Any]:
-        new = self._engine.supersede_record(
+        new = self._store.supersede_record_by_text(
             args["old_record_id"],
             args["new_text"],
             reason=args.get("reason", "updated"),
@@ -279,6 +314,41 @@ class ContextFabricaMCP:
             f"Superseded {args['old_record_id']} with {new.record_id}\n"
             f"  {new.text[:300]}"
         )
+
+    def _tool_related(self, args: dict[str, Any]) -> dict[str, Any]:
+        related = self._store.related_records(
+            args["record_id"],
+            hops=args.get("hops", 1),
+            top_k=args.get("top_k", 5),
+        )
+        if not related:
+            return _tool_result("No related records found.")
+
+        lines: list[str] = []
+        for i, r in enumerate(related, 1):
+            lines.append(
+                f"{i}. [{r.record_id}] source={r.source} domain={r.domain} "
+                f"confidence={r.confidence:.2f}\n"
+                f"   {r.text[:300]}"
+            )
+        return _tool_result("\n\n".join(lines))
+
+    def _tool_history(self, args: dict[str, Any]) -> dict[str, Any]:
+        chain = self._store.supersession_chain(args["record_id"])
+        if not chain:
+            return _tool_result("Record not found.")
+        if len(chain) == 1:
+            return _tool_result(f"No supersession history — [{chain[0].record_id}] is the original record.")
+
+        lines: list[str] = []
+        for i, r in enumerate(chain):
+            marker = "(current)" if i == 0 else "(superseded)"
+            lines.append(
+                f"{i + 1}. [{r.record_id}] {marker} stage={r.stage} "
+                f"confidence={r.confidence:.2f}\n"
+                f"   {r.text[:200]}"
+            )
+        return _tool_result("\n\n".join(lines))
 
 
 # ── JSON-RPC helpers ──
@@ -299,7 +369,8 @@ def _tool_error(text: str) -> dict[str, Any]:
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="context-fabrica MCP server")
-    parser.add_argument("--db", default="./context-fabrica-memory.db", help="Path to SQLite database file")
+    parser.add_argument("--db", default=None, help="Path to SQLite database file (default: ./context-fabrica-memory.db)")
+    parser.add_argument("--dsn", default=None, help="PostgreSQL connection string")
     parser.add_argument("--namespace", default="default", help="Default namespace for this server instance")
     return parser
 
@@ -308,9 +379,21 @@ def main() -> None:
     parser = _build_parser()
     args = parser.parse_args()
 
-    engine = DomainMemoryEngine()
-    server = ContextFabricaMCP(engine, namespace=args.namespace)
-    log.info("context-fabrica MCP server started (db=%s, namespace=%s)", args.db, args.namespace)
+    if args.dsn:
+        from .config import PostgresSettings
+        from .storage.postgres import PostgresPgvectorAdapter
+        record_store = PostgresPgvectorAdapter(PostgresSettings(dsn=args.dsn))
+        backend_label = args.dsn
+    else:
+        db_path = args.db or "./context-fabrica-memory.db"
+        record_store = SQLiteRecordStore(db_path)
+        backend_label = db_path
+
+    store = HybridMemoryStore(store=record_store)
+    store.bootstrap()
+
+    server = ContextFabricaMCP(store, namespace=args.namespace)
+    log.info("context-fabrica MCP server started (backend=%s, namespace=%s)", backend_label, args.namespace)
 
     for line in sys.stdin:
         line = line.strip()

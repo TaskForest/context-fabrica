@@ -1,17 +1,30 @@
 # Changelog
 
-## 0.5.0
+## 1.0.0
+
+### Breaking Changes
+- **`DomainMemoryEngine` removed.** Use `HybridMemoryStore` directly instead. Migration: replace `DomainMemoryEngine()` with `HybridMemoryStore(store=SQLiteRecordStore(":memory:"))` (or a persistent path). All methods (`ingest`, `query`, `related_records`, `invalidate_record`, `supersede_record`, `synthesize_observation`, `promote_record`, `supersession_chain`) are now on `HybridMemoryStore`.
+- **Unified architecture**: `HybridMemoryStore` is now the single entry point for both storage and scoring. BM25 and graph indexes live in-memory but bootstrap lazily from the persistent store. Embedding search delegates to the store backend (SQLite cosine or pgvector HNSW).
 
 ### Added
+- `ScoringPipeline` class extracted from engine for composable multi-signal scoring
+- `HybridMemoryStore.ingest()` and `HybridMemoryStore.query()` with full scoring pipeline
+- `HybridMemoryStore.related_records()`, `invalidate_record()`, `supersede_record_by_text()`, `synthesize_observation()`
+- `list_all_texts()` and `list_all_relations()` on `RecordStore` protocol for BM25/graph bootstrap
+- MCP server `--dsn` flag for Postgres backends
 - zero-dependency MCP server (`context-fabrica-mcp`) for agent tool discovery over stdio
+- `related` and `history` MCP tools for graph exploration and supersession chain inspection
 - Claude Code slash commands: `/remember`, `/recall`, `/synthesize`, `/memory-status`
 - `.mcp.json` project config for drop-in Claude Code integration
-- CLI `--namespace` flag and `occurred_from`/`occurred_to` support in JSONL ingestion
+
+### Changed
+- MCP server uses `HybridMemoryStore` directly — no hydration step, lazy BM25/graph bootstrap
+- All scoring features (temporal, reranking, namespace policies) now work with any storage backend
 
 ## 0.4.0
 
 ### Added
-- temporal occurrence fields on `KnowledgeRecord` plus time-scoped retrieval in `DomainMemoryEngine`
+- temporal occurrence fields on `KnowledgeRecord` plus time-scoped retrieval
 - explicit provenance-backed observation synthesis via `synthesize_observation()`
 - namespace retrieval policies with confidence floors, source allowlists, hop defaults, and rerank controls
 - opt-in second-stage reranking with a default deterministic `TokenOverlapReranker`

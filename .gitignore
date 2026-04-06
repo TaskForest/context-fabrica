@@ -9,3 +9,6 @@ tmp_meta/
 .context_fabrica/
 build/
 dist/
+*.db
+*.db-shm
+*.db-wal

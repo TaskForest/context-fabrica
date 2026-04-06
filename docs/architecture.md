@@ -77,6 +77,26 @@ This package currently implements the core logic in-process to stay lightweight,
 - Can be upgraded to embeddings and persistent graph backends with no API changes.
 - Separation of concerns allows environment-specific storage adapters.
 
+## MCP Server
+
+The MCP server (`context-fabrica-mcp`) exposes `HybridMemoryStore` over JSON-RPC 2.0 via stdio:
+
+```
+Agent (Claude Code, Cursor, etc.)
+  | stdin/stdout (JSON-RPC 2.0)
+context-fabrica-mcp
+  | in-process calls
+HybridMemoryStore (unified engine)
+  | embedding search             | BM25 + graph (in-memory)
+SQLite or Postgres (durable)     ScoringPipeline (lazy bootstrap)
+```
+
+BM25 and graph indexes bootstrap lazily from the store on first query.
+Embedding search delegates to the store (SQLite cosine or pgvector HNSW).
+Every mutation persists immediately — no hydration step needed.
+
+Tools: `remember`, `recall`, `synthesize`, `promote`, `invalidate`, `supersede`, `related`, `history`.
+
 ## Extension Points
 
 - Replace lexical index with embedding store (FAISS/LanceDB/pgvector).

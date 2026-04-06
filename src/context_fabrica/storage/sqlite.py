@@ -443,3 +443,25 @@ class SQLiteRecordStore:
             occurred_from=datetime.fromisoformat(str(row[15])) if row[15] else None,
             occurred_to=datetime.fromisoformat(str(row[16])) if row[16] else None,
         )
+
+    def list_all_texts(self, *, namespace: str | None = None) -> list[tuple[str, str]]:
+        query = "SELECT record_id, text_content FROM memory_records WHERE valid_to IS NULL"
+        params: list[Any] = []
+        if namespace is not None:
+            query += " AND namespace = ?"
+            params.append(namespace)
+        return [(str(r[0]), str(r[1])) for r in self.conn.execute(query, params).fetchall()]
+
+    def list_all_relations(self, *, namespace: str | None = None) -> list[tuple[str, str, str, str, float]]:
+        if namespace is not None:
+            query = (
+                "SELECT mr.record_id, mr.source_entity, mr.relation_type, mr.target_entity, mr.weight "
+                "FROM memory_relations mr "
+                "JOIN memory_records r ON r.record_id = mr.record_id "
+                "WHERE r.namespace = ?"
+            )
+            rows = self.conn.execute(query, (namespace,)).fetchall()
+        else:
+            query = "SELECT record_id, source_entity, relation_type, target_entity, weight FROM memory_relations"
+            rows = self.conn.execute(query).fetchall()
+        return [(str(r[0]), str(r[1]), str(r[2]), str(r[3]), float(r[4])) for r in rows]

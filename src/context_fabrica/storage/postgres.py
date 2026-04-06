@@ -685,6 +685,36 @@ class PostgresPgvectorAdapter:
             rationale=["semantic_match", f"stage:{record.stage}", f"kind:{record.kind}"],
         )
 
+    def list_all_texts(self, *, namespace: str | None = None) -> list[tuple[str, str]]:
+        schema = self.settings.schema
+        query = f"SELECT record_id, text_content FROM {schema}.memory_records WHERE valid_to IS NULL"
+        params: list[object] = []
+        if namespace is not None:
+            query += " AND namespace = %s"
+            params.append(namespace)
+        with self._conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(query, params)
+                return [(str(row[0]), str(row[1])) for row in cur.fetchall()]
+
+    def list_all_relations(self, *, namespace: str | None = None) -> list[tuple[str, str, str, str, float]]:
+        schema = self.settings.schema
+        if namespace is not None:
+            query = (
+                f"SELECT mr.record_id, mr.source_entity, mr.relation_type, mr.target_entity, mr.weight "
+                f"FROM {schema}.memory_relations mr "
+                f"JOIN {schema}.memory_records r ON r.record_id = mr.record_id "
+                f"WHERE r.namespace = %s"
+            )
+            params: list[object] = [namespace]
+        else:
+            query = f"SELECT record_id, source_entity, relation_type, target_entity, weight FROM {schema}.memory_relations"
+            params = []
+        with self._conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(query, params)
+                return [(str(r[0]), str(r[1]), str(r[2]), str(r[3]), float(r[4])) for r in cur.fetchall()]
+
     def _now_utc(self):
         from datetime import datetime, timezone
 

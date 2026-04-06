@@ -31,7 +31,7 @@ context-fabrica-doctor --help
 
 ## Publish
 
-1. Create a GitHub release tagged like `v0.5.0`.
+1. Create a GitHub release tagged like `v1.0.0`.
 2. The `publish-pypi.yml` workflow will build, run `twine check`, and publish to PyPI.
 3. Approve the `pypi` GitHub environment if required.
 

@@ -1,12 +1,19 @@
 from datetime import datetime, timedelta, timezone
 from src.context_fabrica.config import NamespacePolicy, ScoringWeights
-from src.context_fabrica.engine import DomainMemoryEngine
+from src.context_fabrica.storage.hybrid import HybridMemoryStore
+from src.context_fabrica.storage.sqlite import SQLiteRecordStore
 from src.context_fabrica.models import Relation
 from src.context_fabrica.temporal import extract_time_range, temporal_overlap_score
 
 
+def _make_engine(**kwargs) -> HybridMemoryStore:
+    store = HybridMemoryStore(store=SQLiteRecordStore(":memory:"), **kwargs)
+    store.bootstrap()
+    return store
+
+
 def test_query_prefers_graph_connected_record() -> None:
-    engine = DomainMemoryEngine()
+    engine = _make_engine()
     engine.ingest(
         "PaymentsService depends on LedgerAdapter and calls RiskGateway.",
         source="design-doc",
@@ -36,7 +43,7 @@ def test_query_prefers_graph_connected_record() -> None:
 
 
 def test_recency_affects_ranking_when_semantic_is_similar() -> None:
-    engine = DomainMemoryEngine()
+    engine = _make_engine()
     old_record = engine.ingest(
         "API Gateway timeout is 60 seconds for partner integrations.",
         source="old-doc",
@@ -58,7 +65,7 @@ def test_recency_affects_ranking_when_semantic_is_similar() -> None:
 
 
 def test_related_records_returns_graph_neighbors() -> None:
-    engine = DomainMemoryEngine()
+    engine = _make_engine()
     engine.ingest(
         "AuthService uses TokenSigner and depends on KeyStore.",
         record_id="a",
@@ -78,7 +85,7 @@ def test_related_records_returns_graph_neighbors() -> None:
 
 
 def test_invalidated_record_is_filtered_from_current_queries() -> None:
-    engine = DomainMemoryEngine()
+    engine = _make_engine()
     engine.ingest("Build command is make release", record_id="old", confidence=0.8)
     engine.invalidate_record("old", reason="obsolete")
     engine.ingest("Build command is uv run task release", record_id="new", confidence=0.9)
@@ -89,7 +96,7 @@ def test_invalidated_record_is_filtered_from_current_queries() -> None:
 
 
 def test_staged_record_is_hidden_until_promoted() -> None:
-    engine = DomainMemoryEngine()
+    engine = _make_engine()
     staged = engine.ingest(
         "Draft note: TODO investigate flaky auth refresh.",
         source="scratchpad",
@@ -107,7 +114,7 @@ def test_staged_record_is_hidden_until_promoted() -> None:
 
 
 def test_ingest_with_caller_provided_entities_and_relations() -> None:
-    engine = DomainMemoryEngine()
+    engine = _make_engine()
     engine.ingest(
         "The authentication service validates tokens before passing requests to the API gateway.",
         record_id="r1",
@@ -131,7 +138,7 @@ def test_ingest_with_caller_provided_entities_and_relations() -> None:
 
 
 def test_ingest_with_caller_entities_skips_heuristic_extraction() -> None:
-    engine = DomainMemoryEngine()
+    engine = _make_engine()
     # Text has no PascalCase or snake_case — heuristic extraction would find little
     engine.ingest(
         "the login flow checks credentials and returns a session",
@@ -140,13 +147,13 @@ def test_ingest_with_caller_entities_skips_heuristic_extraction() -> None:
     )
     related = engine.related_records("r1", hops=1)
     # entities were attached, so the record is reachable via graph
-    entities = engine._graph.record_entities("r1")
+    entities = engine._scoring.graph.record_entities("r1")
     assert "login_flow" in entities
     assert "session" in entities
 
 
 def test_embedding_scoring_finds_semantically_similar_records() -> None:
-    engine = DomainMemoryEngine(scoring="embedding")
+    engine = _make_engine(scoring="embedding")
     engine.ingest(
         "authentication middleware handles login and session tokens",
         record_id="auth",
@@ -164,7 +171,7 @@ def test_embedding_scoring_finds_semantically_similar_records() -> None:
 
 
 def test_hybrid_scoring_combines_embedding_and_bm25() -> None:
-    engine = DomainMemoryEngine(scoring="hybrid")
+    engine = _make_engine(scoring="hybrid")
     engine.ingest("API Gateway timeout configuration", record_id="r1", confidence=0.7)
     engine.ingest("database connection pooling settings", record_id="r2", confidence=0.7)
 
@@ -175,22 +182,22 @@ def test_hybrid_scoring_combines_embedding_and_bm25() -> None:
 
 
 def test_bm25_only_mode_ignores_embeddings() -> None:
-    engine = DomainMemoryEngine(scoring="bm25")
+    engine = _make_engine(scoring="bm25")
     engine.ingest("PaymentsService processes refunds", record_id="r1", confidence=0.8)
     results = engine.query("PaymentsService refunds", top_k=2)
     assert results
     # Embedding scores should not be computed in bm25 mode
-    assert engine._embeddings  # embeddings are still stored
+    # Embeddings are stored in the SQLite store, not in-memory
     assert results[0].record.record_id == "r1"
 
 
 def test_configurable_scoring_weights() -> None:
     weights = ScoringWeights(semantic=0.80, graph=0.10, temporal=0.0, recency=0.05, confidence=0.05)
-    engine = DomainMemoryEngine(weights=weights)
+    engine = _make_engine(weights=weights)
     # Weights are normalized to sum to 1.0
-    assert abs(sum(engine._weights.values()) - 1.0) < 1e-9
-    assert engine._weights["semantic"] == 0.80  # 0.80 / 1.0
-    assert engine._weights["graph"] == 0.10
+    assert abs(sum(engine._scoring._weights.values()) - 1.0) < 1e-9
+    assert engine._scoring._weights["semantic"] == 0.80  # 0.80 / 1.0
+    assert engine._scoring._weights["graph"] == 0.10
 
     engine.ingest("AuthService depends on TokenSigner", record_id="r1", confidence=0.8)
     results = engine.query("AuthService TokenSigner", top_k=1)
@@ -198,11 +205,9 @@ def test_configurable_scoring_weights() -> None:
 
 
 def test_namespace_filtering_in_engine() -> None:
-    engine = DomainMemoryEngine()
-    engine.ingest("alpha team auth service", record_id="r1", confidence=0.8)
-    engine._records["r1"].namespace = "alpha"
-    engine.ingest("beta team auth service", record_id="r2", confidence=0.8)
-    engine._records["r2"].namespace = "beta"
+    engine = _make_engine()
+    engine.ingest("alpha team auth service", record_id="r1", confidence=0.8, namespace="alpha")
+    engine.ingest("beta team auth service", record_id="r2", confidence=0.8, namespace="beta")
 
     alpha_results = engine.query("auth service", namespace="alpha", top_k=5)
     assert all(r.record.namespace == "alpha" for r in alpha_results)
@@ -210,12 +215,13 @@ def test_namespace_filtering_in_engine() -> None:
 
 
 def test_supersede_record_invalidates_old_and_links() -> None:
-    engine = DomainMemoryEngine()
+    engine = _make_engine()
     engine.ingest("Build command is make release", record_id="v1", confidence=0.8)
-    new = engine.supersede_record("v1", "Build command is uv run task release", record_id="v2", reason="corrected")
+    new = engine.supersede_record_by_text("v1", "Build command is uv run task release", record_id="v2", reason="corrected")
 
     assert new.supersedes == "v1"
-    assert engine._records["v1"].valid_to is not None
+    old = engine.records["v1"]
+    assert old.valid_to is not None
     # Old should be filtered from queries
     results = engine.query("build command", top_k=3)
     assert all(r.record.record_id != "v1" for r in results)
@@ -223,17 +229,17 @@ def test_supersede_record_invalidates_old_and_links() -> None:
 
 
 def test_supersession_chain() -> None:
-    engine = DomainMemoryEngine()
+    engine = _make_engine()
     engine.ingest("timeout is 60s", record_id="v1", confidence=0.8)
-    engine.supersede_record("v1", "timeout is 45s", record_id="v2")
-    engine.supersede_record("v2", "timeout is 30s", record_id="v3")
+    engine.supersede_record_by_text("v1", "timeout is 45s", record_id="v2")
+    engine.supersede_record_by_text("v2", "timeout is 30s", record_id="v3")
 
     chain = engine.supersession_chain("v3")
     assert [r.record_id for r in chain] == ["v3", "v2", "v1"]
 
 
 def test_rrf_scoring_mode() -> None:
-    engine = DomainMemoryEngine(scoring="rrf")
+    engine = _make_engine(scoring="rrf")
     engine.ingest(
         "PaymentsService depends on LedgerAdapter.",
         source="design-doc",
@@ -257,7 +263,7 @@ def test_rrf_scoring_mode() -> None:
 
 
 def test_temporal_query_prefers_matching_occurrence_window() -> None:
-    engine = DomainMemoryEngine()
+    engine = _make_engine()
     engine.ingest(
         "Incident review happened in June 2025 for the auth service.",
         record_id="june",
@@ -282,18 +288,16 @@ def test_namespace_policy_can_constrain_sources_and_confidence() -> None:
         source_allowlist=("design-doc",),
         default_hops=1,
     )
-    engine = DomainMemoryEngine(namespace_policies={"alpha": policy})
-    strong = engine.ingest("alpha auth flow", source="design-doc", record_id="r1", confidence=0.9)
-    weak = engine.ingest("alpha auth flow draft", source="scratchpad", record_id="r2", confidence=0.6)
-    strong.namespace = "alpha"
-    weak.namespace = "alpha"
+    engine = _make_engine(namespace_policies={"alpha": policy})
+    engine.ingest("alpha auth flow", source="design-doc", record_id="r1", confidence=0.9, namespace="alpha")
+    engine.ingest("alpha auth flow draft", source="scratchpad", record_id="r2", confidence=0.6, namespace="alpha")
 
     results = engine.query("auth flow", namespace="alpha", top_k=5)
     assert [result.record.record_id for result in results] == ["r1"]
 
 
 def test_synthesize_observation_creates_provenance_backed_record() -> None:
-    engine = DomainMemoryEngine()
+    engine = _make_engine()
     engine.ingest("AuthService depends on TokenSigner.", record_id="r1", confidence=0.8, namespace="payments")
     engine.ingest("AuthService rotates tokens through TokenSigner daily.", record_id="r2", confidence=0.9, namespace="payments")
 
@@ -312,7 +316,7 @@ def test_optional_reranker_can_reorder_top_results() -> None:
         def score(self, query: str, record) -> float:
             return 1.0 if record.record_id == "r2" else 0.0
 
-    engine = DomainMemoryEngine(reranker=PreferSecond(), rerank_weight=1.0)
+    engine = _make_engine(reranker=PreferSecond(), rerank_weight=1.0)
     engine.ingest("AuthService tokens sessions login middleware", record_id="r1", confidence=0.8)
     engine.ingest("AuthService", record_id="r2", confidence=0.8)
 
@@ -330,7 +334,7 @@ def test_reranker_can_promote_result_from_below_top_k_cutoff() -> None:
         def score(self, query: str, record) -> float:
             return 1.0 if record.record_id == "r3" else 0.0
 
-    engine = DomainMemoryEngine(reranker=PreferThird(), rerank_weight=1.0)
+    engine = _make_engine(reranker=PreferThird(), rerank_weight=1.0)
     engine.ingest("auth service tokens login sessions middleware", record_id="r1", confidence=0.8)
     engine.ingest("auth service tokens login", record_id="r2", confidence=0.8)
     engine.ingest("auth service", record_id="r3", confidence=0.8)
@@ -344,7 +348,7 @@ def test_reranker_can_promote_result_from_below_top_k_cutoff() -> None:
 
 
 def test_temporal_query_does_not_match_boundary_touching_event() -> None:
-    engine = DomainMemoryEngine()
+    engine = _make_engine()
     engine.ingest(
         "Quarterly report published on 2025-07-01.",
         record_id="july-1",
@@ -430,7 +434,7 @@ def test_temporal_overlap_score_partial() -> None:
 
 
 def test_rrf_scoring_with_temporal_signal() -> None:
-    engine = DomainMemoryEngine(scoring="rrf")
+    engine = _make_engine(scoring="rrf")
     engine.ingest(
         "Incident review happened in June 2025.",
         record_id="june",
@@ -456,7 +460,7 @@ def test_reranker_with_single_result_returns_none_rerank_score() -> None:
         def score(self, query: str, record) -> float:
             return 1.0
 
-    engine = DomainMemoryEngine(reranker=AlwaysOne(), rerank_weight=0.5)
+    engine = _make_engine(reranker=AlwaysOne(), rerank_weight=0.5)
     engine.ingest("auth service tokens", record_id="r1", confidence=0.8)
 
     results = engine.query("auth service tokens", top_k=1, rerank_top_n=5)

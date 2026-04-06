@@ -71,6 +71,20 @@ class RecordStore(Protocol):
 
     def enqueue_projection(self, record_id: str) -> None: ...
 
+    def list_all_texts(self, *, namespace: str | None = None) -> list[tuple[str, str]]:
+        """Return (record_id, text) pairs for all valid records.
+
+        Used by the scoring pipeline to bootstrap the BM25 index.
+        """
+        ...
+
+    def list_all_relations(self, *, namespace: str | None = None) -> list[tuple[str, str, str, str, float]]:
+        """Return (record_id, source_entity, relation_type, target_entity, weight) tuples.
+
+        Used by the scoring pipeline to bootstrap the in-memory knowledge graph.
+        """
+        ...
+
 
 class GraphStore(Protocol):
     """Protocol for optional graph projection backends.

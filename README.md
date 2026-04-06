@@ -60,7 +60,7 @@ context-fabrica separates **what is core** (the retrieval model, memory semantic
   ┌──────────────────────────────────────────────────────────┐
   │                      CORE (fixed)                        │
   │                                                          │
-  │  DomainMemoryEngine        Hybrid scoring formula        │
+  │  HybridMemoryStore         Hybrid scoring formula         │
   │  KnowledgeRecord model     Memory tiers & promotion      │
   │  Validity windows          Provenance tracking           │
   │  Temporal recall           Namespace policies            │
@@ -219,10 +219,11 @@ context-fabrica-demo --dsn "postgresql:///context_fabrica" --project
 ```
 
 ```python
-from context_fabrica import DomainMemoryEngine, NamespacePolicy, ScoringWeights, TokenOverlapReranker
+from context_fabrica import HybridMemoryStore, NamespacePolicy, ScoringWeights, SQLiteRecordStore, TokenOverlapReranker
 from context_fabrica.models import Relation
 
-engine = DomainMemoryEngine(
+store = HybridMemoryStore(
+    store=SQLiteRecordStore("./memory.db"),
     reranker=TokenOverlapReranker(),
     namespace_policies={
         "payments": NamespacePolicy(
@@ -231,10 +232,11 @@ engine = DomainMemoryEngine(
             rerank_top_n=5,
         )
     },
-)  # or DomainMemoryEngine(scoring="embedding")
+)
+store.bootstrap()
 
 # Ingest with automatic entity/relation extraction
-engine.ingest(
+store.ingest(
     "PaymentsService depends on LedgerAdapter and calls RiskGateway.",
     source="design-doc",
     domain="fintech",
@@ -242,7 +244,7 @@ engine.ingest(
 )
 
 # Or provide your own entities/relations (e.g. from an upstream LLM)
-engine.ingest(
+store.ingest(
     "The auth service validates tokens before routing to the API gateway.",
     source="architecture-review",
     domain="platform",
@@ -255,24 +257,24 @@ engine.ingest(
 )
 
 # Query with full score breakdown
-results = engine.query("How does PaymentsService interact with LedgerAdapter?", top_k=3)
+results = store.query("How does PaymentsService interact with LedgerAdapter?", top_k=3)
 for hit in results:
     print(f"{hit.record.record_id}  score={hit.score:.2f}  {hit.rationale}")
 
-# Temporal recall
-incident = engine.ingest(
+# Temporal recall — occurrence window is inferred from text
+incident = store.ingest(
     "Quarterly incident review happened in June 2025.",
     source="incident",
     domain="platform",
     confidence=0.9,
     record_id="incident-june",
 )
-time_scoped = engine.query("What happened in June 2025?", top_k=3)
+time_scoped = store.query("What happened in June 2025?", top_k=3)
 
 # Observation synthesis — combine multiple facts into one provenance-backed record
-engine.ingest("AuthService depends on TokenSigner.", record_id="f1", confidence=0.8)
-engine.ingest("TokenSigner rotates keys daily.", record_id="f2", confidence=0.9)
-observation = engine.synthesize_observation(["f1", "f2"], record_id="obs-1")
+store.ingest("AuthService depends on TokenSigner.", record_id="f1", confidence=0.8)
+store.ingest("TokenSigner rotates keys daily.", record_id="f2", confidence=0.9)
+observation = store.synthesize_observation(["f1", "f2"], record_id="obs-1")
 assert observation.metadata["derived_from"] == ["f1", "f2"]
 ```
 
@@ -284,19 +286,19 @@ assert observation.metadata["derived_from"] == ["f1", "f2"]
                     +--------+---------+
                              |
                     +--------v---------+
-                    | DomainMemoryEngine|
-                    |  (in-process)     |
+                    | HybridMemoryStore |
+                    | (unified engine)  |
                     +--------+---------+
                              |
          +----------+--------+--------+----------+
          |          |                 |           |
   +------v---+ +---v--------+ +-----v------+ +--v--------+
   | Embedding| | BM25       | | Knowledge  | | Temporal  |
-  | Similarity | Lexical    | | Graph      | | Overlap   |
-  +------+---+ | Index      | +-----+------+ +--+--------+
-         |     +------------+       |            |
-    (pluggable)              multi-hop BFS  occurrence
-                              with decay    windows
+  | (store)  | | (in-memory)| | Graph      | | Overlap   |
+  +------+---+ +------------+ | (in-memory)| +--+--------+
+         |                     +-----+------+    |
+   SQLite or                  multi-hop BFS  occurrence
+   pgvector                    with decay    windows
 ```
 
 **Scoring formula (default weights, normalized to sum to 1.0):**
@@ -312,9 +314,10 @@ Temporal scoring is neutral unless the query or record carries time information.
 Use namespace policies when one team or agent needs stricter retrieval than another without forking the engine:
 
 ```python
-from context_fabrica import DomainMemoryEngine, NamespacePolicy, ScoringWeights
+from context_fabrica import HybridMemoryStore, NamespacePolicy, ScoringWeights, SQLiteRecordStore
 
-engine = DomainMemoryEngine(
+store = HybridMemoryStore(
+    store=SQLiteRecordStore("./memory.db"),
     namespace_policies={
         "production-ops": NamespacePolicy(
             weights=ScoringWeights(semantic=0.45, graph=0.25, temporal=0.25, recency=0.10, confidence=0.10),
@@ -364,11 +367,11 @@ repeated pattern ──> mined ──> pattern
 
 ```python
 # Low-confidence notes are auto-staged
-draft = engine.ingest("TODO: investigate flaky auth refresh", confidence=0.4)
-assert draft.stage == "staged"  # excluded from queries
+draft = store.ingest("TODO: investigate flaky auth refresh", confidence=0.4)
+assert draft.stage == "staged"  # excluded from default queries
 
 # Promote after review
-engine.promote_record(draft.record_id)  # now canonical, queryable
+store.promote_record(draft.record_id)  # now canonical, queryable
 ```
 
 ## Embedder Options
@@ -380,13 +383,15 @@ engine.promote_record(draft.record_id)  # now canonical, queryable
 | `SentenceTransformerEmbedder` | 384+ | `sentence-transformers` | Production-quality semantic similarity |
 
 ```python
-from context_fabrica import DomainMemoryEngine, SentenceTransformerEmbedder
+from context_fabrica import HybridMemoryStore, SQLiteRecordStore, SentenceTransformerEmbedder
 
 # Production setup with real embeddings
-engine = DomainMemoryEngine(
+store = HybridMemoryStore(
+    store=SQLiteRecordStore("./memory.db"),
     embedder=SentenceTransformerEmbedder(),
     scoring="hybrid",
 )
+store.bootstrap()
 ```
 
 ## MCP Server (Model Context Protocol)
@@ -422,6 +427,8 @@ Add to your project's `.mcp.json` (or `~/.claude/settings.json` for global use):
 | `promote` | Promote a staged draft memory to canonical status |
 | `invalidate` | Soft-delete a memory that is no longer valid |
 | `supersede` | Replace an existing memory with an updated version |
+| `related` | Find graph-connected records to explore how concepts link together |
+| `history` | Show the supersession chain — how a fact evolved over time |
 
 Once configured, your agent can use these tools directly:
 
@@ -500,9 +507,9 @@ context-fabrica-project-memory bootstrap --root .
 
 ```
 src/context_fabrica/
-  engine.py          # In-process hybrid retrieval engine (core)
   models.py          # KnowledgeRecord, Relation, QueryResult (core)
   adapters.py        # RecordStore, GraphStore, Embedder, Reranker protocols (core)
+  scoring.py         # ScoringPipeline: BM25 + graph + temporal + reranking (core)
   policy.py          # Memory tier routing and promotion (core)
   temporal.py        # Time-range extraction and temporal overlap scoring
   synthesis.py       # Provenance-backed observation synthesis

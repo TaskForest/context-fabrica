@@ -5,7 +5,8 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .engine import DomainMemoryEngine
+from .storage.hybrid import HybridMemoryStore
+from .storage.sqlite import SQLiteRecordStore
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -27,12 +28,13 @@ def main() -> None:
     parser = _build_parser()
     args = parser.parse_args()
 
-    engine = DomainMemoryEngine()
+    store = HybridMemoryStore(store=SQLiteRecordStore(":memory:"))
+    store.bootstrap()
     for line in args.dataset.read_text(encoding="utf-8").splitlines():
         if not line.strip():
             continue
         payload = json.loads(line)
-        engine.ingest(
+        store.ingest(
             payload["text"],
             source=payload.get("source", "unknown"),
             domain=payload.get("domain", "global"),
@@ -45,7 +47,7 @@ def main() -> None:
             occurred_to=_parse_iso(payload.get("occurred_to")),
         )
 
-    results = engine.query(args.query, top_k=args.top_k, namespace=args.namespace)
+    results = store.query(args.query, top_k=args.top_k, namespace=args.namespace)
     for idx, item in enumerate(results, start=1):
         print(f"{idx}. {item.record.record_id} score={item.score:.3f} rationale={','.join(item.rationale)}")
         print(f"   {item.record.text[:200]}")

@@ -291,6 +291,54 @@ def test_sqlite_round_trips_occurrence_fields(tmp_path) -> None:
     store.close()
 
 
+def test_sqlite_list_all_texts(tmp_path) -> None:
+    store = SQLiteRecordStore(str(tmp_path / "test.db"))
+    store.bootstrap()
+    r1 = KnowledgeRecord(record_id="r1", text="auth service", source="doc", confidence=0.8)
+    r2 = KnowledgeRecord(record_id="r2", text="billing service", source="doc", confidence=0.8)
+    store.upsert_record(r1)
+    store.upsert_record(r2)
+
+    texts = store.list_all_texts()
+    assert len(texts) == 2
+    ids = {rid for rid, _ in texts}
+    assert ids == {"r1", "r2"}
+    store.close()
+
+
+def test_sqlite_list_all_texts_excludes_invalidated(tmp_path) -> None:
+    store = SQLiteRecordStore(str(tmp_path / "test.db"))
+    store.bootstrap()
+    r1 = KnowledgeRecord(record_id="r1", text="valid fact", source="doc", confidence=0.8)
+    r2 = KnowledgeRecord(
+        record_id="r2", text="old fact", source="doc", confidence=0.8,
+        valid_to=datetime(2020, 1, 1, tzinfo=timezone.utc),
+    )
+    store.upsert_record(r1)
+    store.upsert_record(r2)
+
+    texts = store.list_all_texts()
+    assert len(texts) == 1
+    assert texts[0][0] == "r1"
+    store.close()
+
+
+def test_sqlite_list_all_relations(tmp_path) -> None:
+    store = SQLiteRecordStore(str(tmp_path / "test.db"))
+    store.bootstrap()
+    r1 = KnowledgeRecord(record_id="r1", text="auth service", source="doc", confidence=0.8)
+    store.upsert_record(r1)
+    store.replace_relations("r1", [
+        ("r1", "AuthService", "DEPENDS_ON", "TokenSigner", 1.0),
+    ])
+
+    relations = store.list_all_relations()
+    assert len(relations) == 1
+    assert relations[0][1] == "AuthService"
+    assert relations[0][3] == "TokenSigner"
+    store.close()
+
+
 def test_sqlite_namespace_isolation(tmp_path) -> None:
     store = SQLiteRecordStore(str(tmp_path / "test.db"))
     store.bootstrap()
