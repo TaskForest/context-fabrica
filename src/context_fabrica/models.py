@@ -38,6 +38,19 @@ class Relation:
 
 
 @dataclass
+class ExtractionResult:
+    """Output of an Extractor for a single source file or document."""
+    text: str
+    source: str
+    entities: list[str] = field(default_factory=list)
+    relations: list[Relation] = field(default_factory=list)
+    confidence: float = 0.8
+    domain: str = "global"
+    tags: list[str] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
 class QueryResult:
     record: KnowledgeRecord
     score: float

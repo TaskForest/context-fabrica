@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from typing import Iterable
 from uuid import uuid4
 
-from ..adapters import GraphStore, Reranker, RecordStore
+from ..adapters import Extractor, GraphStore, Reranker, RecordStore
 from ..config import HybridStoreSettings, NamespacePolicy, ScoringWeights
 from ..embedding import Embedder, build_default_embedder, chunk_text
 from ..entity import extract_entities, extract_relations
@@ -418,6 +418,47 @@ class HybridMemoryStore:
             occurred_from=observation.occurred_from,
             occurred_to=observation.occurred_to,
         )
+
+    # ── Extraction ──
+
+    def extract_and_ingest(
+        self,
+        path: str | Path,
+        extractor: Extractor,
+        *,
+        namespace: str = "default",
+    ) -> list[KnowledgeRecord]:
+        """Extract knowledge from files and ingest into the store.
+
+        Uses the provided :class:`Extractor` to parse files under *path*,
+        then ingests each :class:`ExtractionResult` as a persistent,
+        queryable record with entities and relations.
+
+        Args:
+            path: File or directory to extract from.
+            extractor: Extractor implementation (e.g. ``PythonASTExtractor()``).
+            namespace: Namespace for all ingested records.
+
+        Returns:
+            List of ingested :class:`KnowledgeRecord` objects.
+        """
+        from pathlib import Path as _Path
+        results = extractor.extract(_Path(path))
+        records: list[KnowledgeRecord] = []
+        for result in results:
+            record = self.ingest(
+                result.text,
+                source=result.source,
+                domain=result.domain,
+                namespace=namespace,
+                confidence=result.confidence,
+                tags=result.tags,
+                metadata=result.metadata,
+                entities=result.entities,
+                relations=result.relations,
+            )
+            records.append(record)
+        return records
 
     # ── Low-level persistence (existing API) ──
 

@@ -194,6 +194,7 @@ store = HybridMemoryStore(store=MyLanceDBStore(), graph=MyGraphStore())  # graph
 | **Soft invalidation** | Validity windows (`valid_from`/`valid_to`) instead of hard deletes |
 | **Promotion provenance** | Track when, why, and by whom records were promoted |
 | **Namespace policies** | Per-namespace retrieval controls for hops, confidence floor, source allowlists, and reranking |
+| **Knowledge extraction** | Built-in Python AST extractor (zero-dep); pluggable `Extractor` protocol for custom or third-party extractors |
 | **Caller-provided extraction** | Pass your own entities and relations from an upstream LLM — or use built-in heuristics |
 | **Optional reranking** | Add a second-stage reranker on top of hybrid or RRF retrieval when precision matters |
 | **Scoring modes** | `hybrid` (default), `embedding`-only, `bm25`-only, or `rrf` |
@@ -394,17 +395,32 @@ store = HybridMemoryStore(
 store.bootstrap()
 ```
 
-## MCP Server (Model Context Protocol)
+## Agent Platform Support
 
-context-fabrica ships a zero-dependency MCP server that any MCP-compatible client (Claude Code, Cursor, etc.) can discover and use. The server runs locally as a subprocess — no hosting required.
-
-**Install and configure:**
+context-fabrica works with any MCP-compatible agent platform. One command sets up everything:
 
 ```bash
 pip install context-fabrica
+context-fabrica-install                      # auto-detects your platform
+context-fabrica-install --platform codex     # or specify explicitly
+context-fabrica-install --all                # install for all platforms
 ```
 
-Add to your project's `.mcp.json` (or `~/.claude/settings.json` for global use):
+| Platform | What gets created | Status |
+|----------|------------------|--------|
+| **Claude Code** | `.mcp.json` + `.claude/commands/` slash commands | Supported |
+| **Codex (OpenAI)** | `AGENTS.md` + `~/.codex/config.toml` MCP config | Supported |
+| **OpenCode** | `AGENTS.md` + `opencode.json` MCP config | Supported |
+| **OpenClaw** | `AGENTS.md` + `~/.openclaw/config.json` MCP config | Supported |
+| **Factory Droid** | `AGENTS.md` + `.factory/droids/context-fabrica.md` | Supported |
+
+All platforms use the same `context-fabrica-mcp` server over stdio. The installer writes the platform-specific config so the agent discovers the tools automatically.
+
+## MCP Server (Model Context Protocol)
+
+The MCP server runs locally as a subprocess — no hosting required. It exposes 8 tools over JSON-RPC 2.0 via stdio.
+
+You can also configure it manually if you prefer:
 
 ```json
 {
@@ -453,9 +469,100 @@ If you're using Claude Code, context-fabrica includes slash commands that wrap t
 
 These commands are defined in `.claude/commands/` and work automatically when the MCP server is configured.
 
+## Knowledge Extraction
+
+context-fabrica can automatically extract knowledge from source code and ingest it into governed memory. Extracted knowledge is persisted, queryable with full multi-signal scoring, and evolves over time via supersession chains.
+
+### Built-in Python extractor
+
+```bash
+# Extract from a codebase into persistent memory
+context-fabrica-extract ./src --db ./memory.db --namespace myproject
+```
+
+The built-in `PythonASTExtractor` uses the stdlib `ast` module (zero external dependencies) to extract:
+- Classes with inheritance, decorators, and methods
+- Functions with parameters, docstrings, and call targets
+- Import relationships
+- Call graphs (function A calls function B)
+
+All extraction is deterministic and free — no LLM tokens consumed.
+
+```python
+from context_fabrica import HybridMemoryStore, PythonASTExtractor, SQLiteRecordStore
+
+store = HybridMemoryStore(store=SQLiteRecordStore("./memory.db"))
+store.bootstrap()
+
+# Extract and ingest — knowledge is persisted and queryable
+records = store.extract_and_ingest("./src", PythonASTExtractor(), namespace="myproject")
+
+# Agent queries the extracted knowledge with multi-signal scoring
+results = store.query("How does AuthService use TokenSigner?", namespace="myproject", top_k=3)
+```
+
+### Building a custom extractor
+
+Implement the `Extractor` protocol to support any language, document format, or extraction strategy:
+
+```python
+from pathlib import Path
+from context_fabrica import Extractor, ExtractionResult
+from context_fabrica.models import Relation
+
+class TypeScriptExtractor:
+    """Custom extractor for TypeScript projects."""
+
+    def extract(self, path: Path) -> list[ExtractionResult]:
+        results = []
+        for ts_file in path.rglob("*.ts"):
+            # Your extraction logic here (tree-sitter, regex, LLM, etc.)
+            results.append(ExtractionResult(
+                text="UserService handles authentication and session management.",
+                source=str(ts_file),
+                entities=["UserService", "SessionManager"],
+                relations=[Relation("UserService", "depends_on", "SessionManager")],
+                confidence=0.85,
+                domain="auth",
+                tags=["typescript", "ast-extracted"],
+                metadata={"language": "typescript", "source_file": str(ts_file)},
+            ))
+        return results
+
+# Use it exactly like the built-in extractor
+store.extract_and_ingest("./src", TypeScriptExtractor(), namespace="frontend")
+```
+
+### Using third-party extractors
+
+Any tool that can produce `ExtractionResult` objects works. For example, a Graphify adapter:
+
+```python
+import json
+from pathlib import Path
+from context_fabrica import ExtractionResult
+from context_fabrica.models import Relation
+
+class GraphifyAdapter:
+    """Import knowledge from Graphify's graph.json output."""
+
+    def extract(self, path: Path) -> list[ExtractionResult]:
+        graph_data = json.loads((path / "graphify-out" / "graph.json").read_text())
+        # Convert Graphify nodes/edges to ExtractionResults
+        ...
+```
+
 ## CLI
 
 ```bash
+# Install for your agent platform
+context-fabrica-install                      # auto-detect
+context-fabrica-install --platform codex     # explicit
+context-fabrica-install --all                # all platforms
+
+# Extract knowledge from source code
+context-fabrica-extract ./src --db ./memory.db --namespace myproject
+
 # Query from JSONL dataset
 context-fabrica --dataset records.jsonl --query "How is TokenSigner connected?" --top-k 5
 
@@ -519,14 +626,20 @@ src/context_fabrica/
   index.py           # BM25 lexical index (core)
   graph.py           # In-memory knowledge graph with BFS traversal (core)
   embedding.py       # Embedder adapters: Hash, FastEmbed, SentenceTransformer (pluggable)
+  extract_cli.py     # CLI for knowledge extraction from source files
+  install_cli.py     # Multi-platform installer (Claude Code, Codex, OpenCode, OpenClaw, Factory Droid)
+  extractors/
+    python_ast.py    # Built-in Python AST extractor (zero deps, stdlib only)
   storage/
     sqlite.py        # SQLite record store — zero deps (pluggable)
     postgres.py      # Postgres + pgvector adapter with LISTEN/NOTIFY (pluggable)
     kuzu.py          # Kuzu graph projection adapter (pluggable, optional)
     hybrid.py        # HybridMemoryStore — orchestrates any RecordStore + GraphStore
     projector.py     # Background projection worker
+AGENTS.md            # Agent instructions for Codex, OpenCode, OpenClaw
 .claude/commands/    # Claude Code slash commands (/remember, /recall, /synthesize, /memory-status)
 .mcp.json            # MCP server configuration for Claude Code
+.factory/droids/     # Factory Droid agent definition
 tests/               # pytest suite, including live Postgres coverage
 docs/                # Architecture docs and getting-started guide
 examples/            # Runnable usage examples

@@ -28,6 +28,7 @@ setup(
     include_package_data=True,
     packages=[
         "context_fabrica",
+        "context_fabrica.extractors",
         "context_fabrica.storage",
     ],
     extras_require={
@@ -63,6 +64,8 @@ setup(
             "context-fabrica-projector=context_fabrica.projector_cli:main",
             "context-fabrica-project-memory=context_fabrica.project_memory_cli:main",
             "context-fabrica-mcp=context_fabrica.mcp_server:main",
+            "context-fabrica-extract=context_fabrica.extract_cli:main",
+            "context-fabrica-install=context_fabrica.install_cli:main",
         ]
     },
 )

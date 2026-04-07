@@ -7,6 +7,13 @@
 - **Unified architecture**: `HybridMemoryStore` is now the single entry point for both storage and scoring. BM25 and graph indexes live in-memory but bootstrap lazily from the persistent store. Embedding search delegates to the store backend (SQLite cosine or pgvector HNSW).
 
 ### Added
+- `Extractor` protocol and `ExtractionResult` model for pluggable knowledge extraction
+- `PythonASTExtractor` — zero-dep Python AST extractor (classes, functions, imports, calls, inheritance)
+- `HybridMemoryStore.extract_and_ingest()` for extraction-to-memory pipeline
+- `context-fabrica-extract` CLI for extracting knowledge from source code
+- `context-fabrica-install` CLI with multi-platform support: Claude Code, Codex, OpenCode, OpenClaw, Factory Droid
+- `AGENTS.md` for Codex/OpenCode/OpenClaw agent instructions
+- `.factory/droids/context-fabrica.md` for Factory Droid
 - `ScoringPipeline` class extracted from engine for composable multi-signal scoring
 - `HybridMemoryStore.ingest()` and `HybridMemoryStore.query()` with full scoring pipeline
 - `HybridMemoryStore.related_records()`, `invalidate_record()`, `supersede_record_by_text()`, `synthesize_observation()`

@@ -4,7 +4,9 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Protocol
 
-from .models import KnowledgeRecord, QueryResult
+from pathlib import Path
+
+from .models import ExtractionResult, KnowledgeRecord, QueryResult
 
 
 @dataclass
@@ -102,6 +104,23 @@ class Reranker(Protocol):
     """Protocol for optional second-stage rerankers."""
 
     def score(self, query: str, record: KnowledgeRecord) -> float: ...
+
+
+class Extractor(Protocol):
+    """Protocol for knowledge extraction from source files.
+
+    Implement this to extract entities, relations, and knowledge text
+    from code, documents, or other sources. The built-in
+    ``PythonASTExtractor`` handles Python files via the stdlib ``ast``
+    module with zero external dependencies.
+    """
+
+    def extract(self, path: Path) -> list[ExtractionResult]:
+        """Extract knowledge from all files under *path*.
+
+        Returns one :class:`ExtractionResult` per source file processed.
+        """
+        ...
 
 
 class TrustPolicyAdapter(Protocol):
