@@ -18,12 +18,11 @@ def main() -> None:
     parser.add_argument("--record-id", default="demo-auth-1")
     args = parser.parse_args()
 
-    store = HybridMemoryStore(
-        HybridStoreSettings(
-            postgres=PostgresSettings(dsn=args.dsn),
-            kuzu=KuzuSettings(path=args.kuzu_path),
-        )
+    settings = HybridStoreSettings(
+        postgres=PostgresSettings(dsn=args.dsn),
+        kuzu=KuzuSettings(path=args.kuzu_path),
     )
+    store = HybridMemoryStore(settings)
     store.bootstrap_postgres()
 
     record = KnowledgeRecord(
@@ -46,8 +45,8 @@ def main() -> None:
 
     if args.project:
         worker = GraphProjectionWorker(
-            PostgresPgvectorAdapter(store.settings.postgres),
-            KuzuGraphProjectionAdapter(store.settings.kuzu),
+            PostgresPgvectorAdapter(settings.postgres),
+            KuzuGraphProjectionAdapter(settings.kuzu),
         )
         results = worker.process_pending(limit=10)
         print(f"Projection results: {results}")
