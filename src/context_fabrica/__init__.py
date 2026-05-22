@@ -3,7 +3,7 @@ from .embedding import FastEmbedEmbedder, HashEmbedder, SentenceTransformerEmbed
 from .config import HybridStoreSettings, KuzuSettings, NamespacePolicy, PostgresSettings, ScoringWeights
 from .models import ExtractionResult, KnowledgeRecord, QueryResult
 from .policy import PromotionDecision, decide_memory_tier, promote_record
-from .extractors import PythonASTExtractor
+from .extractors import PythonASTExtractor, TypeScriptASTExtractor
 from .reranking import TokenOverlapReranker
 from .scoring import ScoringMode
 from .storage import GraphProjectionWorker, HybridMemoryStore, SQLiteRecordStore
@@ -22,6 +22,7 @@ __all__ = [
     "NamespacePolicy",
     "PostgresSettings",
     "PythonASTExtractor",
+    "TypeScriptASTExtractor",
     "PromotionDecision",
     "QueryResult",
     "Reranker",
