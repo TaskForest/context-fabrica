@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Iterable
 from uuid import uuid4
 
@@ -147,11 +148,7 @@ class HybridMemoryStore:
         Returns:
             The persisted KnowledgeRecord.
 
-        Raises:
-            TypeError: If *text* is not a string.
         """
-        if not isinstance(text, str):
-            raise TypeError(f"text must be a string, got {type(text).__name__}")
         rid = record_id or str(uuid4())
         created_at = datetime.now(tz=timezone.utc)
         inferred_occurrence = None
@@ -236,11 +233,7 @@ class HybridMemoryStore:
         Returns:
             Ranked list of :class:`QueryResult` with score breakdowns.
 
-        Raises:
-            TypeError: If *prompt* is not a string.
         """
-        if not isinstance(prompt, str):
-            raise TypeError(f"prompt must be a string, got {type(prompt).__name__}")
         self._ensure_scoring_bootstrapped()
 
         # Resolve namespace policy for hops
@@ -442,8 +435,7 @@ class HybridMemoryStore:
         Returns:
             List of ingested :class:`KnowledgeRecord` objects.
         """
-        from pathlib import Path as _Path
-        results = extractor.extract(_Path(path))
+        results = extractor.extract(Path(path))
         records: list[KnowledgeRecord] = []
         for result in results:
             record = self.ingest(

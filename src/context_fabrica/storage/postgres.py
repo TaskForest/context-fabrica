@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import suppress
+from datetime import datetime
 import json
 from importlib import import_module
 from typing import Any, cast
@@ -265,7 +266,6 @@ class PostgresPgvectorAdapter:
         )
 
     def health_probe_statement(self) -> str:
-        schema = self.settings.schema
         return (
             "SELECT current_database(), current_user, exists (select 1 from pg_extension where extname = 'vector');"
         )

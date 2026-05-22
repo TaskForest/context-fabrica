@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
-from typing import Any
 
 from ..models import ExtractionResult, Relation
 
@@ -120,7 +119,7 @@ class _ASTVisitor(ast.NodeVisitor):
             parts.append(f"inherits {', '.join(bases)}")
 
         # Decorators
-        decorators = [_name_of(d) for d in node.decorator_list if _name_of(d)]
+        decorators = [name for d in node.decorator_list if (name := _name_of(d)) is not None]
         if decorators:
             parts.append(f"decorated with @{', @'.join(decorators)}")
 
@@ -162,7 +161,7 @@ class _ASTVisitor(ast.NodeVisitor):
         parts = [f"{'Async function' if isinstance(node, ast.AsyncFunctionDef) else 'Function'} {qualified}"]
 
         # Decorators
-        decorators = [_name_of(d) for d in node.decorator_list if _name_of(d)]
+        decorators = [name for d in node.decorator_list if (name := _name_of(d)) is not None]
         if decorators:
             parts.append(f"decorated with @{', @'.join(decorators)}")
 
