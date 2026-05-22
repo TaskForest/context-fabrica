@@ -473,11 +473,14 @@ These commands are defined in `.claude/commands/` and work automatically when th
 
 context-fabrica can automatically extract knowledge from source code and ingest it into governed memory. Extracted knowledge is persisted, queryable with full multi-signal scoring, and evolves over time via supersession chains.
 
-### Built-in Python extractor
+### Built-in extractors
 
 ```bash
 # Extract from a codebase into persistent memory
 context-fabrica-extract ./src --db ./memory.db --namespace myproject
+
+# Extract TypeScript / TSX with the built-in tree-sitter parser
+context-fabrica-extract ./frontend --language typescript --db ./memory.db --namespace frontend
 ```
 
 The built-in `PythonASTExtractor` uses the stdlib `ast` module (zero external dependencies) to extract:
@@ -488,14 +491,24 @@ The built-in `PythonASTExtractor` uses the stdlib `ast` module (zero external de
 
 All extraction is deterministic and free — no LLM tokens consumed.
 
+`TypeScriptASTExtractor` adds first-class `.ts` and `.tsx` parsing via `tree-sitter` + `tree-sitter-typescript` and extracts:
+- Classes with inheritance and methods
+- Functions, arrow functions, and method signatures
+- Interfaces and type aliases
+- Import relationships
+- Call graphs (function A calls function B)
+
 ```python
-from context_fabrica import HybridMemoryStore, PythonASTExtractor, SQLiteRecordStore
+from context_fabrica import HybridMemoryStore, PythonASTExtractor, SQLiteRecordStore, TypeScriptASTExtractor
 
 store = HybridMemoryStore(store=SQLiteRecordStore("./memory.db"))
 store.bootstrap()
 
 # Extract and ingest — knowledge is persisted and queryable
 records = store.extract_and_ingest("./src", PythonASTExtractor(), namespace="myproject")
+
+# TypeScript / TSX extraction (requires: pip install 'context-fabrica[typescript]')
+frontend_records = store.extract_and_ingest("./frontend", TypeScriptASTExtractor(), namespace="frontend")
 
 # Agent queries the extracted knowledge with multi-signal scoring
 results = store.query("How does AuthService use TokenSigner?", namespace="myproject", top_k=3)
@@ -529,7 +542,7 @@ class TypeScriptExtractor:
             ))
         return results
 
-# Use it exactly like the built-in extractor
+# Use it exactly like the built-in extractors
 store.extract_and_ingest("./src", TypeScriptExtractor(), namespace="frontend")
 ```
 

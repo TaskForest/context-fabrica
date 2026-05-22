@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- `TypeScriptASTExtractor` for native `.ts` / `.tsx` parsing via `tree-sitter`
+- `context-fabrica-extract --language typescript` for the built-in TypeScript extractor
+
+### Changed
+- Added optional `typescript` package extra and dev dependencies for built-in TypeScript parsing
+
 ## 1.0.1
 
 ### Fixed
