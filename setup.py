@@ -34,12 +34,15 @@ setup(
     extras_require={
         "postgres": ["psycopg[binary]>=3.2", "pgvector>=0.3"],
         "kuzu": ["kuzu>=0.8"],
+        "typescript": ["tree-sitter>=0.23,<0.24", "tree-sitter-typescript>=0.23,<0.24"],
         "fastembed": ["fastembed"],
         "transformers": ["sentence-transformers>=2.0"],
         "all": [
             "psycopg[binary]>=3.2",
             "pgvector>=0.3",
             "kuzu>=0.8",
+            "tree-sitter>=0.23,<0.24",
+            "tree-sitter-typescript>=0.23,<0.24",
             "fastembed",
             "sentence-transformers>=2.0",
         ],
