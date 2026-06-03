@@ -3,16 +3,17 @@ from __future__ import annotations
 
 from typing import Any
 
+from src.context_fabrica.embedding import HashEmbedder
 from src.context_fabrica.mcp_server import ContextFabricaMCP
 from src.context_fabrica.storage.hybrid import HybridMemoryStore
 from src.context_fabrica.storage.sqlite import SQLiteRecordStore
 
 
-def _make_server(tmp_path) -> ContextFabricaMCP:
+def _make_server(tmp_path, *, read_only: bool = False) -> ContextFabricaMCP:
     db = str(tmp_path / "test.db")
-    store = HybridMemoryStore(store=SQLiteRecordStore(db))
+    store = HybridMemoryStore(store=SQLiteRecordStore(db), embedder=HashEmbedder(dimensions=64))
     store.bootstrap()
-    return ContextFabricaMCP(store, namespace="test")
+    return ContextFabricaMCP(store, namespace="test", read_only=read_only)
 
 
 def _call(server: ContextFabricaMCP, method: str, params: dict[str, Any] | None = None, msg_id: int = 1) -> dict[str, Any]:
@@ -43,7 +44,14 @@ def test_tools_list(tmp_path) -> None:
     server = _make_server(tmp_path)
     resp = _call(server, "tools/list")
     tool_names = {t["name"] for t in resp["result"]["tools"]}
-    assert tool_names == {"remember", "recall", "synthesize", "promote", "invalidate", "supersede", "related", "history"}
+    assert tool_names == {"remember", "recall", "get", "synthesize", "promote", "invalidate", "supersede", "related", "history"}
+
+
+def test_tools_list_read_only(tmp_path) -> None:
+    server = _make_server(tmp_path, read_only=True)
+    resp = _call(server, "tools/list")
+    tool_names = {t["name"] for t in resp["result"]["tools"]}
+    assert tool_names == {"recall", "get"}
 
 
 def test_notification_returns_none(tmp_path) -> None:
@@ -65,6 +73,12 @@ def test_unknown_tool_returns_error(tmp_path) -> None:
     assert resp["result"]["isError"] is True
 
 
+def test_read_only_rejects_write_tools(tmp_path) -> None:
+    server = _make_server(tmp_path, read_only=True)
+    resp = _call_tool(server, "remember", {"text": "should not write"})
+    assert resp["result"]["isError"] is True
+
+
 def test_remember_and_recall(tmp_path) -> None:
     server = _make_server(tmp_path)
     remember_resp = _call_tool(server, "remember", {
@@ -77,7 +91,44 @@ def test_remember_and_recall(tmp_path) -> None:
 
     recall_resp = _call_tool(server, "recall", {"query": "AuthService"})
     assert recall_resp["result"]["isError"] is False
-    assert "AuthService" in recall_resp["result"]["content"][0]["text"]
+    text = recall_resp["result"]["content"][0]["text"]
+    assert "AuthService" in text
+    assert "score=" not in text
+
+
+def test_recall_verbose_includes_metadata(tmp_path) -> None:
+    server = _make_server(tmp_path)
+    _call_tool(server, "remember", {
+        "text": "AuthService depends on TokenSigner",
+        "source": "test",
+        "confidence": 0.9,
+    })
+
+    recall_resp = _call_tool(server, "recall", {"query": "AuthService", "verbosity": "verbose"})
+    text = recall_resp["result"]["content"][0]["text"]
+    assert "score=" in text
+    assert "confidence=0.90" in text
+
+
+def test_get_fetches_full_record(tmp_path) -> None:
+    server = _make_server(tmp_path)
+    long_text = "AuthService depends on TokenSigner. " + ("extra detail " * 80)
+    _call_tool(server, "remember", {"text": long_text, "record_id": "auth-full"})
+
+    get_resp = _call_tool(server, "get", {"record_id": "auth-full"})
+    text = get_resp["result"]["content"][0]["text"]
+    assert "[auth-full]" in text
+    assert long_text in text
+
+
+def test_get_can_include_chunks(tmp_path) -> None:
+    server = _make_server(tmp_path)
+    _call_tool(server, "remember", {"text": "AuthService depends on TokenSigner", "record_id": "auth-chunks"})
+
+    get_resp = _call_tool(server, "get", {"record_id": "auth-chunks", "include_chunks": True})
+    text = get_resp["result"]["content"][0]["text"]
+    assert "chunks:" in text
+    assert "0. AuthService depends on TokenSigner" in text
 
 
 def test_remember_with_explicit_id(tmp_path) -> None:
