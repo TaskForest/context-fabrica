@@ -2,11 +2,19 @@
 
 ## Unreleased
 
+## 1.0.2
+
 ### Added
+- `context-fabrica-mcp --embedder`, `--embed-model`, and `--embed-dimensions` for selecting local embedding backends
+- `context-fabrica-mcp --read-only` to expose only `recall` and `get` for lower tool-schema overhead
+- MCP `get` tool for expanding a recalled record on demand
 - `TypeScriptASTExtractor` for native `.ts` / `.tsx` parsing via `tree-sitter`
 - `context-fabrica-extract --language typescript` for the built-in TypeScript extractor
 
 ### Changed
+- Default embedder selection now prefers FastEmbed/MiniLM, then sentence-transformers, with hash as an explicit or dependency fallback
+- MCP `recall` is concise by default, defaults to `top_k=3`, and supports `verbosity` plus `max_chars`
+- `chunk_text()` preserves formatting and prefers paragraph/line boundaries
 - Added optional `typescript` package extra and dev dependencies for built-in TypeScript parsing
 
 ## 1.0.1

@@ -379,9 +379,11 @@ store.promote_record(draft.record_id)  # now canonical, queryable
 
 | Embedder | Dimensions | Dependencies | Quality |
 |----------|-----------|-------------|---------|
-| `HashEmbedder` (default) | 1536 | None | Deterministic hashing, good for dev/testing |
-| `FastEmbedEmbedder` | 384 | `fastembed` | Lightweight ML, good balance |
+| `FastEmbedEmbedder` (auto default when installed) | model-defined | `fastembed` | Lightweight ML, good balance |
 | `SentenceTransformerEmbedder` | 384+ | `sentence-transformers` | Production-quality semantic similarity |
+| `HashEmbedder` | configurable, 384 default via MCP fallback | None | Deterministic hashing, good for dev/testing |
+
+`build_default_embedder()` and the MCP server prefer FastEmbed/MiniLM, then sentence-transformers, and only fall back to hashing when optional local embedding dependencies are unavailable. Use `--embedder hash` to force deterministic hashing.
 
 ```python
 from context_fabrica import HybridMemoryStore, SQLiteRecordStore, SentenceTransformerEmbedder
@@ -418,7 +420,7 @@ All platforms use the same `context-fabrica-mcp` server over stdio. The installe
 
 ## MCP Server (Model Context Protocol)
 
-The MCP server runs locally as a subprocess — no hosting required. It exposes 8 tools over JSON-RPC 2.0 via stdio.
+The MCP server runs locally as a subprocess — no hosting required. It exposes memory tools over JSON-RPC 2.0 via stdio. For low-overhead read-only agents, start it with `--read-only` to expose only `recall` and `get`.
 
 You can also configure it manually if you prefer:
 
@@ -427,7 +429,7 @@ You can also configure it manually if you prefer:
   "mcpServers": {
     "context-fabrica": {
       "command": "context-fabrica-mcp",
-      "args": ["--db", "./memory.db", "--namespace", "myproject"]
+      "args": ["--db", "./memory.db", "--namespace", "myproject", "--read-only"]
     }
   }
 }
@@ -438,7 +440,8 @@ You can also configure it manually if you prefer:
 | Tool | Description |
 |------|-------------|
 | `remember` | Store a fact, observation, or insight in long-term memory |
-| `recall` | Search memory for relevant knowledge with scored results |
+| `recall` | Search memory concisely; use `verbosity="verbose"` for scores and metadata |
+| `get` | Fetch one full memory record by ID |
 | `synthesize` | Combine multiple facts into a provenance-backed observation |
 | `promote` | Promote a staged draft memory to canonical status |
 | `invalidate` | Soft-delete a memory that is no longer valid |

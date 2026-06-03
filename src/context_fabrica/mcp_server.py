@@ -26,7 +26,7 @@ from .storage.sqlite import SQLiteRecordStore
 
 PROTOCOL_VERSION = "2024-11-05"
 SERVER_NAME = "context-fabrica"
-SERVER_VERSION = "1.0.1"
+SERVER_VERSION = "1.0.2"
 
 logging.basicConfig(level=logging.DEBUG, stream=sys.stderr, format="%(levelname)s: %(message)s")
 log = logging.getLogger(SERVER_NAME)
